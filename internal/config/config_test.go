@@ -568,6 +568,33 @@ func TestRemoveServer(t *testing.T) {
 	})
 }
 
+func TestGetEffectiveOutput(t *testing.T) {
+	t.Run("returns config output format when no env var", func(t *testing.T) {
+		cfg := &Config{Settings: Settings{OutputFormat: "json"}}
+		result := cfg.GetEffectiveOutput()
+		if result != "json" {
+			t.Errorf("got %q, want %q", result, "json")
+		}
+	})
+
+	t.Run("env var overrides config output format", func(t *testing.T) {
+		t.Setenv("TM1CLI_OUTPUT", "json")
+		cfg := &Config{Settings: Settings{OutputFormat: "table"}}
+		result := cfg.GetEffectiveOutput()
+		if result != "json" {
+			t.Errorf("got %q, want %q", result, "json")
+		}
+	})
+
+	t.Run("returns default when config is empty and no env var", func(t *testing.T) {
+		cfg := &Config{Settings: Settings{OutputFormat: ""}}
+		result := cfg.GetEffectiveOutput()
+		if result != DefaultOutput {
+			t.Errorf("got %q, want %q", result, DefaultOutput)
+		}
+	})
+}
+
 func TestGetEffectiveServer(t *testing.T) {
 	t.Run("returns config default when no env var", func(t *testing.T) {
 		cfg := &Config{Default: "myserver"}

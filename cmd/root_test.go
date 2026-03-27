@@ -49,6 +49,13 @@ func TestGetOutputFormat(t *testing.T) {
 			cfgNil:     true,
 			wantResult: "table",
 		},
+		{
+			name:       "env var works even when config is nil",
+			flagValue:  "",
+			envValue:   "json",
+			cfgNil:     true,
+			wantResult: "json",
+		},
 	}
 
 	for _, tt := range tests {

@@ -71,7 +71,7 @@ func getOutputFormat(cfg *config.Config) string {
 		return envOutput
 	}
 	if cfg != nil {
-		return cfg.Settings.OutputFormat
+		return cfg.GetEffectiveOutput()
 	}
 	return config.DefaultOutput
 }

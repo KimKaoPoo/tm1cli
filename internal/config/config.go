@@ -176,6 +176,16 @@ func (c *Config) RemoveServer(name string) string {
 	return c.Default
 }
 
+func (c *Config) GetEffectiveOutput() string {
+	if envOutput := os.Getenv("TM1CLI_OUTPUT"); envOutput != "" {
+		return envOutput
+	}
+	if c.Settings.OutputFormat != "" {
+		return c.Settings.OutputFormat
+	}
+	return DefaultOutput
+}
+
 func (c *Config) GetEffectiveServer() string {
 	if envServer := os.Getenv("TM1CLI_SERVER"); envServer != "" {
 		return envServer
