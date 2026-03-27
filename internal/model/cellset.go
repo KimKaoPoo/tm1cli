@@ -19,7 +19,7 @@ type CellsetMember struct {
 	Name string `json:"Name"`
 }
 
-type ViewExecuteResponse struct {
+type CellsetResponse struct {
 	Axes  []CellsetAxis `json:"Axes"`
 	Cells []CellsetCell `json:"Cells"`
 }

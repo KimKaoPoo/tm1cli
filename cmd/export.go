@@ -78,7 +78,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	var resp model.ViewExecuteResponse
+	var resp model.CellsetResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		output.PrintError("Cannot parse cellset response.", jsonMode)
 		return errSilent
@@ -93,7 +93,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printCellsetTable(resp model.ViewExecuteResponse) {
+func printCellsetTable(resp model.CellsetResponse) {
 	if len(resp.Axes) < 2 {
 		fmt.Println("No data returned.")
 		return
