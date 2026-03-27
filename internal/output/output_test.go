@@ -315,6 +315,88 @@ func TestPrintError(t *testing.T) {
 	}
 }
 
+func TestPrintErrorWithStatus(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      string
+		status   int
+		jsonMode bool
+		validate func(t *testing.T, output string)
+	}{
+		{
+			name:     "table mode prints Error prefix with HTTP status",
+			msg:      "not found",
+			status:   404,
+			jsonMode: false,
+			validate: func(t *testing.T, output string) {
+				if !strings.Contains(output, "Error (HTTP 404): not found") {
+					t.Errorf("output = %q, want 'Error (HTTP 404): not found'", output)
+				}
+			},
+		},
+		{
+			name:     "JSON mode includes error and status fields",
+			msg:      "authentication failed",
+			status:   401,
+			jsonMode: true,
+			validate: func(t *testing.T, output string) {
+				var result map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &result); err != nil {
+					t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+				}
+				errMsg, ok := result["error"].(string)
+				if !ok {
+					t.Fatal("missing 'error' key in JSON output")
+				}
+				if errMsg != "authentication failed" {
+					t.Errorf("error = %q, want %q", errMsg, "authentication failed")
+				}
+				statusVal, ok := result["status"].(float64)
+				if !ok {
+					t.Fatal("missing 'status' key in JSON output")
+				}
+				if int(statusVal) != 401 {
+					t.Errorf("status = %v, want 401", statusVal)
+				}
+			},
+		},
+		{
+			name:     "JSON mode uses 2-space indent",
+			msg:      "server error",
+			status:   500,
+			jsonMode: true,
+			validate: func(t *testing.T, output string) {
+				if !strings.Contains(output, "  \"error\"") {
+					t.Errorf("output should use 2-space indent, got:\n%s", output)
+				}
+			},
+		},
+		{
+			name:     "table mode with 500 status",
+			msg:      "internal server error",
+			status:   500,
+			jsonMode: false,
+			validate: func(t *testing.T, output string) {
+				if !strings.Contains(output, "Error (HTTP 500)") {
+					t.Errorf("output should contain 'Error (HTTP 500)', got: %q", output)
+				}
+				if !strings.Contains(output, "internal server error") {
+					t.Errorf("output should contain message, got: %q", output)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureStderr(t, func() {
+				PrintErrorWithStatus(tt.msg, tt.status, tt.jsonMode)
+			})
+			tt.validate(t, output)
+		})
+	}
+}
+
 func TestPrintWarning(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -39,6 +39,16 @@ func PrintError(msg string, jsonMode bool) {
 	}
 }
 
+func PrintErrorWithStatus(msg string, status int, jsonMode bool) {
+	if jsonMode {
+		errObj := map[string]interface{}{"error": msg, "status": status}
+		data, _ := json.MarshalIndent(errObj, "", "  ")
+		fmt.Fprintln(os.Stderr, string(data))
+	} else {
+		fmt.Fprintf(os.Stderr, "Error (HTTP %d): %s\n", status, msg)
+	}
+}
+
 func PrintWarning(msg string) {
 	fmt.Fprintf(os.Stderr, "[warn] %s\n", msg)
 }
