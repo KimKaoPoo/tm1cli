@@ -30,5 +30,8 @@ CLAUDE.md
 
 .mcp.json
 
+# GoReleaser
+dist/
+
 # Implementation plan (temporary)
 IMPLEMENTATION_PLAN.md
