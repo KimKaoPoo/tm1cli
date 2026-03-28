@@ -188,6 +188,16 @@ Parameters map to the Parameters tab in the TI editor
 	RunE: runProcessRun,
 }
 
+// parseProcessParam splits a "Key=Value" string on the first '=' sign.
+// Values may contain additional '=' characters.
+func parseProcessParam(s string) (string, string, error) {
+	idx := strings.Index(s, "=")
+	if idx < 0 {
+		return "", "", fmt.Errorf("Invalid parameter format '%s'. Use Key=Value.", s)
+	}
+	return s[:idx], s[idx+1:], nil
+}
+
 func runProcessRun(cmd *cobra.Command, args []string) error {
 	processName := args[0]
 
@@ -209,14 +219,14 @@ func runProcessRun(cmd *cobra.Command, args []string) error {
 	if len(procRunParams) > 0 {
 		params := make([]model.ProcessParameter, 0, len(procRunParams))
 		for _, p := range procRunParams {
-			idx := strings.Index(p, "=")
-			if idx < 0 {
-				output.PrintError(fmt.Sprintf("Invalid parameter format '%s'. Use Key=Value.", p), jsonMode)
+			name, value, err := parseProcessParam(p)
+			if err != nil {
+				output.PrintError(err.Error(), jsonMode)
 				return errSilent
 			}
 			params = append(params, model.ProcessParameter{
-				Name:  p[:idx],
-				Value: p[idx+1:],
+				Name:  name,
+				Value: value,
 			})
 		}
 		body = model.ProcessExecuteBody{Parameters: params}
