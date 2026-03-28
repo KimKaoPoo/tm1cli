@@ -2,9 +2,7 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,26 +31,6 @@ func setupTestHome(t *testing.T, cfg *config.Config) {
 			t.Fatalf("cannot write config: %v", err)
 		}
 	}
-}
-
-// captureStdout runs fn and returns everything written to os.Stdout.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("cannot create pipe: %v", err)
-	}
-	os.Stdout = w
-
-	fn()
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	return buf.String()
 }
 
 // withStdin replaces os.Stdin with a reader containing input for the duration of fn.
