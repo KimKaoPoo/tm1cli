@@ -497,16 +497,596 @@ func TestConfigSettings(t *testing.T) {
 	})
 }
 
-// --- config edit (stub) ---
+// --- config edit ---
+
+// withMockPassword overrides readPasswordFn for the duration of fn,
+// making it return the given password string (empty string simulates Enter).
+func withMockPassword(t *testing.T, pw string, fn func()) {
+	t.Helper()
+	orig := readPasswordFn
+	readPasswordFn = func() (string, error) {
+		return pw, nil
+	}
+	defer func() { readPasswordFn = orig }()
+	fn()
+}
 
 func TestConfigEdit(t *testing.T) {
-	err := configEditCmd.RunE(configEditCmd, []string{"myserver"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("error = %q, want 'not yet implemented'", err.Error())
-	}
+	t.Run("keeps all values when pressing Enter through all prompts", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[{"Name":"Sales"}]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// All Enter = keep existing values
+		var output string
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				output = captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		if !strings.Contains(output, "updated") {
+			t.Errorf("should confirm update, got: %q", output)
+		}
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.URL != ts.URL+"/api/v1" {
+			t.Errorf("URL = %q, want %q", srv.URL, ts.URL+"/api/v1")
+		}
+		if srv.User != "admin" {
+			t.Errorf("User = %q, want 'admin'", srv.User)
+		}
+		if srv.AuthMode != "basic" {
+			t.Errorf("AuthMode = %q, want 'basic'", srv.AuthMode)
+		}
+		decoded, _ := config.DecodePassword(srv.Password)
+		if decoded != "secret" {
+			t.Errorf("password = %q, want 'secret'", decoded)
+		}
+	})
+
+	t.Run("changes URL only", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      "https://old-server:8010/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// New URL, then Enter for rest
+		input := ts.URL + "/api/v1\n\n\n\n"
+		withStdin(t, input, func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.URL != ts.URL+"/api/v1" {
+			t.Errorf("URL = %q, want %q", srv.URL, ts.URL+"/api/v1")
+		}
+		if srv.User != "admin" {
+			t.Errorf("User should be unchanged, got %q", srv.User)
+		}
+	})
+
+	t.Run("changes auth mode from basic to cam and prompts namespace", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter URL, "cam" for auth, "LDAP" for namespace, Enter for user
+		input := "\ncam\nLDAP\n\n"
+		withStdin(t, input, func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.AuthMode != "cam" {
+			t.Errorf("AuthMode = %q, want 'cam'", srv.AuthMode)
+		}
+		if srv.Namespace != "LDAP" {
+			t.Errorf("Namespace = %q, want 'LDAP'", srv.Namespace)
+		}
+	})
+
+	t.Run("changes auth mode from cam to basic and clears namespace", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:       ts.URL + "/api/v1",
+					User:      "admin",
+					Password:  config.EncodePassword("secret"),
+					AuthMode:  "cam",
+					Namespace: "LDAP",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter URL, "basic" for auth, Enter for user (no namespace prompt)
+		input := "\nbasic\n\n"
+		withStdin(t, input, func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.AuthMode != "basic" {
+			t.Errorf("AuthMode = %q, want 'basic'", srv.AuthMode)
+		}
+		if srv.Namespace != "" {
+			t.Errorf("Namespace = %q, want empty (cleared)", srv.Namespace)
+		}
+	})
+
+	t.Run("changes password", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("oldpass"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter for all fields except password
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "newpass", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		decoded, _ := config.DecodePassword(saved.Servers["myserver"].Password)
+		if decoded != "newpass" {
+			t.Errorf("password = %q, want 'newpass'", decoded)
+		}
+	})
+
+	t.Run("error for non-existent connection", func(t *testing.T) {
+		setupTestHome(t, testConfig())
+
+		err := runConfigEdit(configEditCmd, []string{"nonexistent"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error = %q, want 'not found'", err.Error())
+		}
+	})
+
+	t.Run("error when no config exists", func(t *testing.T) {
+		setupTestHome(t, nil)
+
+		err := runConfigEdit(configEditCmd, []string{"myserver"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "No connection configured") {
+			t.Errorf("error = %q, want 'No connection configured'", err.Error())
+		}
+	})
+
+	t.Run("error for invalid auth mode", func(t *testing.T) {
+		setupTestHome(t, testConfig())
+
+		// Enter URL, then invalid auth mode
+		withStdin(t, "\ninvalid\n", func() {
+			err := runConfigEdit(configEditCmd, []string{"dev"})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "auth mode must be") {
+				t.Errorf("error = %q, want 'auth mode must be'", err.Error())
+			}
+		})
+	})
+
+	t.Run("connection test success shows checkmark", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[{"Name":"Sales"}]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		var output string
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				output = captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		if !strings.Contains(output, "Testing connection...") {
+			t.Errorf("should show testing message, got: %q", output)
+		}
+	})
+
+	t.Run("connection test failure with save anyway", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		closedURL := ts.URL
+		ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      closedURL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter through fields, then "y" for save anyway
+		var output string
+		withStdin(t, "\n\n\ny\n", func() {
+			withMockPassword(t, "", func() {
+				output = captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		if !strings.Contains(output, "updated") {
+			t.Errorf("should save anyway, got: %q", output)
+		}
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		if _, ok := saved.Servers["myserver"]; !ok {
+			t.Error("myserver should still be saved")
+		}
+	})
+
+	t.Run("connection test failure and user declines save", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		closedURL := ts.URL
+		ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      "https://original-server:8010/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Change URL to closed server, then "n" for save anyway
+		withStdin(t, closedURL+"/api/v1\n\n\nn\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.URL != "https://original-server:8010/api/v1" {
+			t.Errorf("URL should be unchanged after decline, got %q", srv.URL)
+		}
+	})
+
+	t.Run("default connection remains default after edit", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := testConfig()
+		cfg.Servers["dev"] = config.ServerConfig{
+			URL:      ts.URL + "/api/v1",
+			User:     "admin",
+			Password: config.EncodePassword("secret"),
+			AuthMode: "basic",
+		}
+		setupTestHome(t, cfg)
+
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"dev"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		if saved.Default != "dev" {
+			t.Errorf("default should still be 'dev', got %q", saved.Default)
+		}
+	})
+
+	t.Run("shows current values in prompts", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "testuser",
+					Password: config.EncodePassword("secret"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		var output string
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				output = captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		if !strings.Contains(output, "Editing connection 'myserver'") {
+			t.Errorf("should show editing header, got: %q", output)
+		}
+		if !strings.Contains(output, ts.URL+"/api/v1") {
+			t.Errorf("should show current URL in prompt, got: %q", output)
+		}
+		if !strings.Contains(output, "[basic]") {
+			t.Errorf("should show current auth mode in prompt, got: %q", output)
+		}
+		if !strings.Contains(output, "[testuser]") {
+			t.Errorf("should show current username in prompt, got: %q", output)
+		}
+		if !strings.Contains(output, "[****]") {
+			t.Errorf("should show masked password, got: %q", output)
+		}
+	})
+
+	t.Run("edits CAM connection keeping namespace", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:       ts.URL + "/api/v1",
+					User:      "admin",
+					Password:  config.EncodePassword("secret"),
+					AuthMode:  "cam",
+					Namespace: "LDAP",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter through all fields (keep cam, keep LDAP namespace)
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["myserver"]
+		if srv.AuthMode != "cam" {
+			t.Errorf("AuthMode = %q, want 'cam'", srv.AuthMode)
+		}
+		if srv.Namespace != "LDAP" {
+			t.Errorf("Namespace = %q, want 'LDAP'", srv.Namespace)
+		}
+	})
+
+	t.Run("uses TM1CLI_PASSWORD env var when Enter pressed for password", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("oldpass"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+		t.Setenv("TM1CLI_PASSWORD", "env-password")
+
+		// Enter through all fields, empty password = use env var
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		// Password in config should still be the old stored one (env var only used for connection test)
+		decoded, _ := config.DecodePassword(saved.Servers["myserver"].Password)
+		if decoded != "oldpass" {
+			t.Errorf("stored password = %q, want 'oldpass' (env var should not change stored value)", decoded)
+		}
+	})
 }
 
 // --- config add ---
