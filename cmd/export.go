@@ -202,7 +202,11 @@ func outputCellset(resp model.CellsetResponse, jsonMode bool) error {
 
 	// CSV file output
 	if strings.HasSuffix(strings.ToLower(exportOut), ".csv") {
-		return writeCSV(resp, exportOut, exportNoHeader)
+		if err := writeCSV(resp, exportOut, exportNoHeader); err != nil {
+			output.PrintError(err.Error(), jsonMode)
+			return errSilent
+		}
+		return nil
 	}
 
 	if jsonMode {
