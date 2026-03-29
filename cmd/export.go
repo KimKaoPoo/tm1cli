@@ -151,7 +151,7 @@ func runMDXExport(cl *client.Client, jsonMode bool) error {
 	}
 
 	// Step 4: Fetch cells in pages
-	var allCells []model.CellsetCell
+	allCells := make([]model.CellsetCell, 0, totalCells)
 	for skip := 0; ; skip += mdxCellPageSize {
 		cellsEndpoint := fmt.Sprintf("Cellsets('%s')/Cells?$select=Value,Ordinal&$top=%d&$skip=%d",
 			resp.ID, mdxCellPageSize, skip)
@@ -162,9 +162,7 @@ func runMDXExport(cl *client.Client, jsonMode bool) error {
 			return errSilent
 		}
 
-		var cellResp struct {
-			Value []model.CellsetCell `json:"value"`
-		}
+		var cellResp model.CellsCollectionResponse
 		if err := json.Unmarshal(cellData, &cellResp); err != nil {
 			output.PrintError("Cannot parse cells response.", jsonMode)
 			return errSilent

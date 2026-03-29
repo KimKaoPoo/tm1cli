@@ -24,3 +24,7 @@ type CellsetResponse struct {
 	Axes  []CellsetAxis `json:"Axes"`
 	Cells []CellsetCell `json:"Cells"`
 }
+
+type CellsCollectionResponse struct {
+	Value []CellsetCell `json:"value"`
+}
