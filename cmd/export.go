@@ -7,11 +7,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"tm1cli/internal/client"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
 
 	"github.com/spf13/cobra"
 )
+
+const mdxCellPageSize = 10000
 
 var (
 	exportView     string
@@ -21,32 +24,48 @@ var (
 )
 
 var exportCmd = &cobra.Command{
-	Use:   "export <cube>",
+	Use:   "export [cube]",
 	Short: "Export cube data to screen or file",
 	Long: `Export cube data to screen or file.
 
 Equivalent to: File → Export in TM1 Architect
                or Export View in PAW
 REST API:      POST /Cubes('name')/Views('view')/tm1.Execute
-               POST /ExecuteMDX`,
-	Example: `  tm1cli export "Sales" --view "Default"
+               POST /ExecuteMDX
+
+Use --view with a cube name to export a saved view.
+Use --mdx to export using an MDX query (cube name is optional).`,
+	Example: `  # View-based export
+  tm1cli export "Sales" --view "Default"
   tm1cli export "Sales" --view "Default" -o report.csv
   tm1cli export "Sales" --view "Default" -o report.json
-  tm1cli export "Sales" --view "Default" --output json`,
-	Args: cobra.ExactArgs(1),
+
+  # MDX-based export
+  tm1cli export --mdx "SELECT {[Period].[Jan]} ON COLUMNS, {[Measure].[Revenue]} ON ROWS FROM [Sales]"
+  tm1cli export --mdx "SELECT ... FROM [Sales]" -o report.csv`,
+	Args: cobra.RangeArgs(0, 1),
 	RunE: runExport,
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
-	cubeName := args[0]
-
-	if exportView == "" && exportMDX == "" {
-		return fmt.Errorf("Specify --view or --mdx. Example: tm1cli export \"%s\" --view \"Default\"", cubeName)
+	cubeName := ""
+	if len(args) > 0 {
+		cubeName = args[0]
 	}
 
-	// TODO: Phase 2 — MDX export
-	if exportMDX != "" {
-		return fmt.Errorf("MDX export is not yet implemented (coming in v0.2.0). Use --view instead.")
+	if exportView == "" && exportMDX == "" {
+		if cubeName != "" {
+			return fmt.Errorf("Specify --view or --mdx. Example: tm1cli export \"%s\" --view \"Default\"", cubeName)
+		}
+		return fmt.Errorf("Specify --view or --mdx. Example: tm1cli export \"MyCube\" --view \"Default\"")
+	}
+
+	if exportView != "" && exportMDX != "" {
+		return fmt.Errorf("Specify --view or --mdx, not both.")
+	}
+
+	if exportView != "" && cubeName == "" {
+		return fmt.Errorf("Cube name is required with --view. Example: tm1cli export \"MyCube\" --view \"Default\"")
 	}
 
 	// Validate file extension before doing any network calls
@@ -73,6 +92,14 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
+	if exportMDX != "" {
+		return runMDXExport(cl, jsonMode)
+	}
+
+	return runViewExport(cl, cubeName, jsonMode)
+}
+
+func runViewExport(cl *client.Client, cubeName string, jsonMode bool) error {
 	endpoint := fmt.Sprintf("Cubes('%s')/Views('%s')/tm1.Execute?$expand=Axes($expand=Tuples($expand=Members($select=Name))),Cells($select=Value,Ordinal)", url.PathEscape(cubeName), url.PathEscape(exportView))
 
 	data, err := cl.Post(endpoint, map[string]interface{}{})
@@ -87,6 +114,83 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
+	return outputCellset(resp, jsonMode)
+}
+
+func runMDXExport(cl *client.Client, jsonMode bool) error {
+	// Step 1: Execute MDX — expand axes only, fetch cells separately for pagination
+	endpoint := "ExecuteMDX?$expand=Axes($expand=Tuples($expand=Members($select=Name)))"
+	payload := map[string]interface{}{"MDX": exportMDX}
+
+	data, err := cl.Post(endpoint, payload)
+	if err != nil {
+		output.PrintError(err.Error(), jsonMode)
+		return errSilent
+	}
+
+	var resp model.CellsetResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		output.PrintError("Cannot parse cellset response.", jsonMode)
+		return errSilent
+	}
+
+	if resp.ID == "" {
+		output.PrintError("Server did not return a cellset ID.", jsonMode)
+		return errSilent
+	}
+
+	// Step 2: Clean up cellset when done (runs even on error)
+	defer func() {
+		_ = cl.Delete(fmt.Sprintf("Cellsets('%s')", resp.ID))
+	}()
+
+	// Step 3: Calculate expected total cells for progress display
+	totalCells := 1
+	for _, axis := range resp.Axes {
+		totalCells *= len(axis.Tuples)
+	}
+
+	// Step 4: Fetch cells in pages
+	var allCells []model.CellsetCell
+	for skip := 0; ; skip += mdxCellPageSize {
+		cellsEndpoint := fmt.Sprintf("Cellsets('%s')/Cells?$select=Value,Ordinal&$top=%d&$skip=%d",
+			resp.ID, mdxCellPageSize, skip)
+
+		cellData, err := cl.Get(cellsEndpoint)
+		if err != nil {
+			output.PrintError(err.Error(), jsonMode)
+			return errSilent
+		}
+
+		var cellResp struct {
+			Value []model.CellsetCell `json:"value"`
+		}
+		if err := json.Unmarshal(cellData, &cellResp); err != nil {
+			output.PrintError("Cannot parse cells response.", jsonMode)
+			return errSilent
+		}
+
+		allCells = append(allCells, cellResp.Value...)
+
+		// Show progress for large exports (more than one page)
+		if totalCells > mdxCellPageSize {
+			fetched := len(allCells)
+			if fetched > totalCells {
+				fetched = totalCells
+			}
+			fmt.Fprintf(os.Stderr, "Fetching cells: %d / %d\n", fetched, totalCells)
+		}
+
+		if len(cellResp.Value) < mdxCellPageSize {
+			break
+		}
+	}
+
+	resp.Cells = allCells
+	return outputCellset(resp, jsonMode)
+}
+
+func outputCellset(resp model.CellsetResponse, jsonMode bool) error {
 	// JSON file output
 	if strings.HasSuffix(strings.ToLower(exportOut), ".json") {
 		records := cellsetToRecords(resp)
@@ -295,7 +399,7 @@ func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error 
 func init() {
 	rootCmd.AddCommand(exportCmd)
 	exportCmd.Flags().StringVar(&exportView, "view", "", "Saved view name")
-	exportCmd.Flags().StringVar(&exportMDX, "mdx", "", "MDX query string (v0.2.0)")
+	exportCmd.Flags().StringVar(&exportMDX, "mdx", "", "MDX query string")
 	exportCmd.Flags().StringVarP(&exportOut, "out", "o", "", "Output file path (.csv, .json)")
 	exportCmd.Flags().BoolVar(&exportNoHeader, "no-header", false, "Exclude header row from CSV output")
 }
