@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -45,16 +46,18 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("MDX export is not yet implemented (coming in v0.2.0). Use --view instead.")
 	}
 
-	// TODO: Phase 1.1 — file output
+	// Validate file output format early (before API call)
 	if exportOut != "" {
 		ext := strings.ToLower(exportOut)
 		if strings.HasSuffix(ext, ".xlsx") {
 			return fmt.Errorf("XLSX export is not yet implemented (coming in v0.2.0).")
 		}
-		if strings.HasSuffix(ext, ".csv") || strings.HasSuffix(ext, ".json") {
-			return fmt.Errorf("File export is not yet implemented (coming in v0.1.1).")
+		if strings.HasSuffix(ext, ".csv") {
+			return fmt.Errorf("CSV export is not yet implemented (coming in v0.1.1).")
 		}
-		return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
+		if !strings.HasSuffix(ext, ".json") {
+			return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
+		}
 	}
 
 	cfg, err := loadConfig()
@@ -84,12 +87,90 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
+	// JSON file output
+	if strings.HasSuffix(strings.ToLower(exportOut), ".json") {
+		records := cellsetToRecords(resp)
+		if err := writeJSONFile(exportOut, records); err != nil {
+			output.PrintError(err.Error(), jsonMode)
+			return errSilent
+		}
+		fmt.Fprintf(os.Stderr, "Wrote %d records to %s\n", len(records), exportOut)
+		return nil
+	}
+
 	if jsonMode {
 		output.PrintJSON(resp)
 		return nil
 	}
 
 	printCellsetTable(resp)
+	return nil
+}
+
+// cellsetToRecords converts a CellsetResponse into a flat array of record maps.
+// Row dimension members become DIM1, DIM2, etc. Column headers become value keys.
+func cellsetToRecords(resp model.CellsetResponse) []map[string]interface{} {
+	if len(resp.Axes) < 2 {
+		return []map[string]interface{}{}
+	}
+
+	colAxis := resp.Axes[0]
+	rowAxis := resp.Axes[1]
+
+	numCols := len(colAxis.Tuples)
+	if numCols == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Build column header names
+	colHeaders := make([]string, numCols)
+	for i, tuple := range colAxis.Tuples {
+		names := make([]string, len(tuple.Members))
+		for j, m := range tuple.Members {
+			names[j] = m.Name
+		}
+		colHeaders[i] = strings.Join(names, " / ")
+	}
+
+	// Index cells by ordinal
+	cellsByOrdinal := make(map[int]interface{}, len(resp.Cells))
+	for _, cell := range resp.Cells {
+		cellsByOrdinal[cell.Ordinal] = cell.Value
+	}
+
+	// Build records
+	records := make([]map[string]interface{}, 0, len(rowAxis.Tuples))
+	for r, tuple := range rowAxis.Tuples {
+		record := make(map[string]interface{})
+		for d, m := range tuple.Members {
+			record[fmt.Sprintf("DIM%d", d+1)] = m.Name
+		}
+		for c := 0; c < numCols; c++ {
+			ordinal := r*numCols + c
+			if v, ok := cellsByOrdinal[ordinal]; ok {
+				record[colHeaders[c]] = v
+			} else {
+				record[colHeaders[c]] = nil
+			}
+		}
+		records = append(records, record)
+	}
+
+	return records
+}
+
+func writeJSONFile(filePath string, data interface{}) error {
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("Cannot write file: %s", err.Error())
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		return fmt.Errorf("Cannot encode JSON: %s", err.Error())
+	}
 	return nil
 }
 
