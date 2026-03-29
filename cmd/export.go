@@ -27,7 +27,7 @@ var exportCmd = &cobra.Command{
 
 Equivalent to: File → Export in TM1 Architect
                or Export View in PAW
-REST API:      GET /Cubes('name')/Views('view')/tm1.Execute
+REST API:      POST /Cubes('name')/Views('view')/tm1.Execute
                POST /ExecuteMDX`,
 	Example: `  tm1cli export "Sales" --view "Default"
   tm1cli export "Sales" --view "Default" -o report.csv
@@ -75,7 +75,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	endpoint := fmt.Sprintf("Cubes('%s')/Views('%s')/tm1.Execute?$expand=Axes($expand=Tuples($expand=Members($select=Name))),Cells($select=Value,Ordinal)", url.PathEscape(cubeName), url.PathEscape(exportView))
 
-	data, err := cl.Get(endpoint)
+	data, err := cl.Post(endpoint, map[string]interface{}{})
 	if err != nil {
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
