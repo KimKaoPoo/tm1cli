@@ -47,15 +47,15 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate file output format early (before API call)
+	exportOutLower := strings.ToLower(exportOut)
 	if exportOut != "" {
-		ext := strings.ToLower(exportOut)
-		if strings.HasSuffix(ext, ".xlsx") {
+		if strings.HasSuffix(exportOutLower, ".xlsx") {
 			return fmt.Errorf("XLSX export is not yet implemented (coming in v0.2.0).")
 		}
-		if strings.HasSuffix(ext, ".csv") {
+		if strings.HasSuffix(exportOutLower, ".csv") {
 			return fmt.Errorf("CSV export is not yet implemented (coming in v0.1.1).")
 		}
-		if !strings.HasSuffix(ext, ".json") {
+		if !strings.HasSuffix(exportOutLower, ".json") {
 			return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
 		}
 	}
@@ -88,7 +88,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// JSON file output
-	if strings.HasSuffix(strings.ToLower(exportOut), ".json") {
+	if strings.HasSuffix(exportOutLower, ".json") {
 		records := cellsetToRecords(resp)
 		if err := writeJSONFile(exportOut, records); err != nil {
 			output.PrintError(err.Error(), jsonMode)
@@ -141,7 +141,7 @@ func cellsetToRecords(resp model.CellsetResponse) []map[string]interface{} {
 	// Build records
 	records := make([]map[string]interface{}, 0, len(rowAxis.Tuples))
 	for r, tuple := range rowAxis.Tuples {
-		record := make(map[string]interface{})
+		record := make(map[string]interface{}, len(tuple.Members)+numCols)
 		for d, m := range tuple.Members {
 			record[fmt.Sprintf("DIM%d", d+1)] = m.Name
 		}
