@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -12,9 +14,10 @@ import (
 )
 
 var (
-	exportView string
-	exportMDX  string
-	exportOut  string
+	exportView     string
+	exportMDX      string
+	exportOut      string
+	exportNoHeader bool
 )
 
 var exportCmd = &cobra.Command{
@@ -45,16 +48,18 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("MDX export is not yet implemented (coming in v0.2.0). Use --view instead.")
 	}
 
-	// TODO: Phase 1.1 — file output
+	// Validate file extension before doing any network calls
 	if exportOut != "" {
 		ext := strings.ToLower(exportOut)
 		if strings.HasSuffix(ext, ".xlsx") {
 			return fmt.Errorf("XLSX export is not yet implemented (coming in v0.2.0).")
 		}
-		if strings.HasSuffix(ext, ".csv") || strings.HasSuffix(ext, ".json") {
-			return fmt.Errorf("File export is not yet implemented (coming in v0.1.1).")
+		if strings.HasSuffix(ext, ".json") {
+			return fmt.Errorf("JSON file export is not yet implemented (coming in v0.1.1).")
 		}
-		return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
+		if !strings.HasSuffix(ext, ".csv") {
+			return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
+		}
 	}
 
 	cfg, err := loadConfig()
@@ -84,6 +89,11 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
+	// CSV file output (extension already validated above)
+	if exportOut != "" {
+		return writeCSV(resp, exportOut, exportNoHeader)
+	}
+
 	if jsonMode {
 		output.PrintJSON(resp)
 		return nil
@@ -93,10 +103,11 @@ func runExport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printCellsetTable(resp model.CellsetResponse) {
+// buildCellsetRows converts a CellsetResponse into headers and row data.
+// Returns nil, nil if the response has fewer than 2 axes or 0 column tuples.
+func buildCellsetRows(resp model.CellsetResponse) ([]string, [][]string) {
 	if len(resp.Axes) < 2 {
-		fmt.Println("No data returned.")
-		return
+		return nil, nil
 	}
 
 	colAxis := resp.Axes[0]
@@ -104,8 +115,7 @@ func printCellsetTable(resp model.CellsetResponse) {
 
 	numCols := len(colAxis.Tuples)
 	if numCols == 0 {
-		fmt.Println("No data returned.")
-		return
+		return nil, nil
 	}
 
 	// Build column headers
@@ -124,7 +134,7 @@ func printCellsetTable(resp model.CellsetResponse) {
 		rowMemberCount = len(rowAxis.Tuples[0].Members)
 	}
 
-	// Table headers
+	// Headers
 	headers := make([]string, 0, rowMemberCount+numCols)
 	for i := 0; i < rowMemberCount; i++ {
 		headers = append(headers, fmt.Sprintf("DIM%d", i+1))
@@ -155,7 +165,52 @@ func printCellsetTable(resp model.CellsetResponse) {
 		rows[r] = row
 	}
 
+	return headers, rows
+}
+
+func printCellsetTable(resp model.CellsetResponse) {
+	headers, rows := buildCellsetRows(resp)
+	if headers == nil {
+		fmt.Println("No data returned.")
+		return
+	}
 	output.PrintTable(headers, rows)
+}
+
+func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error {
+	headers, rows := buildCellsetRows(resp)
+	if headers == nil {
+		fmt.Fprintln(os.Stderr, "No data to export.")
+		return nil
+	}
+
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("Cannot create file: %s", err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+
+	if !noHeader {
+		if err := w.Write(headers); err != nil {
+			return fmt.Errorf("Cannot write CSV header: %s", err)
+		}
+	}
+
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("Cannot write CSV row: %s", err)
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("Cannot write CSV: %s", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rows), filePath)
+	return nil
 }
 
 func init() {
@@ -163,4 +218,5 @@ func init() {
 	exportCmd.Flags().StringVar(&exportView, "view", "", "Saved view name")
 	exportCmd.Flags().StringVar(&exportMDX, "mdx", "", "MDX query string (v0.2.0)")
 	exportCmd.Flags().StringVarP(&exportOut, "out", "o", "", "Output file path (.csv, .json)")
+	exportCmd.Flags().BoolVar(&exportNoHeader, "no-header", false, "Exclude header row from CSV output")
 }
