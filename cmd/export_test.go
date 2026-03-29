@@ -1712,6 +1712,42 @@ func TestWriteXLSX(t *testing.T) {
 		})
 	})
 
+	t.Run("string cell values preserved without numeric conversion", func(t *testing.T) {
+		strResp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Comment"}}},
+				}},
+				{Ordinal: 1, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Item1"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 0, Value: "00123"},
+			},
+		}
+
+		outFile := filepath.Join(t.TempDir(), "strval.xlsx")
+		captureAll(t, func() {
+			err := writeXLSX(strResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// String cell value "00123" must be preserved as-is, not converted to 123
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		if b2 != "00123" {
+			t.Errorf("B2 = %q, want 00123 (string value preserved)", b2)
+		}
+	})
+
 	t.Run("numeric-looking member names preserved as text", func(t *testing.T) {
 		numResp := model.CellsetResponse{
 			Axes: []model.CellsetAxis{

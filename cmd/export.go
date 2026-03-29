@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -306,14 +305,39 @@ func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error 
 }
 
 func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error {
-	headers, rows := buildCellsetRows(resp)
-	if headers == nil {
+	if len(resp.Axes) < 2 {
 		fmt.Fprintln(os.Stderr, "No data to export.")
 		return nil
 	}
 
-	// Dimension member columns are always strings; only data columns may be numeric.
-	rowMemberCount := len(headers) - len(resp.Axes[0].Tuples)
+	colAxis := resp.Axes[0]
+	rowAxis := resp.Axes[1]
+	numCols := len(colAxis.Tuples)
+	if numCols == 0 {
+		fmt.Fprintln(os.Stderr, "No data to export.")
+		return nil
+	}
+
+	// Build column headers
+	colHeaders := make([]string, numCols)
+	for i, tuple := range colAxis.Tuples {
+		names := make([]string, len(tuple.Members))
+		for j, m := range tuple.Members {
+			names[j] = m.Name
+		}
+		colHeaders[i] = strings.Join(names, " / ")
+	}
+
+	rowMemberCount := 0
+	if len(rowAxis.Tuples) > 0 {
+		rowMemberCount = len(rowAxis.Tuples[0].Members)
+	}
+
+	// Index cells by ordinal to preserve original types
+	cellsByOrdinal := make(map[int]interface{}, len(resp.Cells))
+	for _, cell := range resp.Cells {
+		cellsByOrdinal[cell.Ordinal] = cell.Value
+	}
 
 	f := excelize.NewFile()
 	defer f.Close()
@@ -321,26 +345,34 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 
 	rowIdx := 1
 	if !noHeader {
-		for c, h := range headers {
-			cell, _ := excelize.CoordinatesToCellName(c+1, rowIdx)
+		col := 1
+		for i := 0; i < rowMemberCount; i++ {
+			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
+			f.SetCellValue(sheet, cell, fmt.Sprintf("DIM%d", i+1))
+			col++
+		}
+		for _, h := range colHeaders {
+			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
 			f.SetCellValue(sheet, cell, h)
+			col++
 		}
 		rowIdx++
 	}
 
-	for _, row := range rows {
-		for c, val := range row {
-			cell, _ := excelize.CoordinatesToCellName(c+1, rowIdx)
-			if val == "" {
-				continue
+	for r, tuple := range rowAxis.Tuples {
+		col := 1
+		for _, m := range tuple.Members {
+			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
+			f.SetCellValue(sheet, cell, m.Name)
+			col++
+		}
+		for c := 0; c < numCols; c++ {
+			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
+			ordinal := r*numCols + c
+			if v, ok := cellsByOrdinal[ordinal]; ok && v != nil {
+				f.SetCellValue(sheet, cell, v)
 			}
-			if c >= rowMemberCount {
-				if num, err := strconv.ParseFloat(val, 64); err == nil {
-					f.SetCellValue(sheet, cell, num)
-					continue
-				}
-			}
-			f.SetCellValue(sheet, cell, val)
+			col++
 		}
 		rowIdx++
 	}
@@ -349,7 +381,7 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 		return fmt.Errorf("Cannot write file: %s", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rows), filePath)
+	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rowAxis.Tuples), filePath)
 	return nil
 }
 
