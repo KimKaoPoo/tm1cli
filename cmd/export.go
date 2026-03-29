@@ -308,6 +308,9 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 		return nil
 	}
 
+	// Dimension member columns are always strings; only data columns may be numeric.
+	rowMemberCount := len(headers) - len(resp.Axes[0].Tuples)
+
 	f := excelize.NewFile()
 	defer f.Close()
 	sheet := "Sheet1"
@@ -327,11 +330,13 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 			if val == "" {
 				continue
 			}
-			if num, err := strconv.ParseFloat(val, 64); err == nil {
-				f.SetCellValue(sheet, cell, num)
-			} else {
-				f.SetCellValue(sheet, cell, val)
+			if c >= rowMemberCount {
+				if num, err := strconv.ParseFloat(val, 64); err == nil {
+					f.SetCellValue(sheet, cell, num)
+					continue
+				}
 			}
+			f.SetCellValue(sheet, cell, val)
 		}
 		rowIdx++
 	}

@@ -1690,6 +1690,56 @@ func TestWriteXLSX(t *testing.T) {
 		})
 	})
 
+	t.Run("numeric-looking member names preserved as text", func(t *testing.T) {
+		numResp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				}},
+				{Ordinal: 1, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "00123"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "2024"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 0, Value: 100.0},
+				{Ordinal: 1, Value: 200.0},
+			},
+		}
+
+		outFile := filepath.Join(t.TempDir(), "members.xlsx")
+		captureAll(t, func() {
+			err := writeXLSX(numResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// Member "00123" must keep leading zeros (text, not number)
+		a2, _ := f.GetCellValue("Sheet1", "A2")
+		if a2 != "00123" {
+			t.Errorf("A2 = %q, want 00123 (leading zeros preserved)", a2)
+		}
+
+		// Member "2024" must remain string "2024"
+		a3, _ := f.GetCellValue("Sheet1", "A3")
+		if a3 != "2024" {
+			t.Errorf("A3 = %q, want 2024", a3)
+		}
+
+		// Data column (Jan) should still be numeric
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		if b2 != "100" {
+			t.Errorf("B2 = %q, want 100", b2)
+		}
+	})
+
 	t.Run("sparse cells render as empty cells", func(t *testing.T) {
 		sparseResp := model.CellsetResponse{
 			Axes: []model.CellsetAxis{
