@@ -183,7 +183,6 @@ func zeroAllFlags() {
 	exportView = ""
 	exportMDX = ""
 	exportOut = ""
-	exportNoHeader = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.

@@ -46,9 +46,6 @@ func NewClient(server config.ServerConfig, password string, tlsVerify bool, verb
 	}
 
 	baseURL := strings.TrimRight(server.URL, "/")
-	if !strings.HasSuffix(baseURL, "/api/v1") {
-		baseURL += "/api/v1"
-	}
 
 	return &Client{
 		httpClient: httpClient,

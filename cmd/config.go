@@ -51,7 +51,7 @@ For better security, use the TM1CLI_PASSWORD environment variable.`,
   tm1cli config add
 
   # with flags
-  tm1cli config add myserver --url https://host:8010 --user myuser --auth basic
+  tm1cli config add myserver --url https://host:8010/api/v1 --user myuser --auth basic
 
   # with env var for password (no storage)
   export TM1CLI_PASSWORD=mysecret
@@ -94,7 +94,7 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	// URL
 	url := addFlagURL
 	if url == "" {
-		fmt.Print("TM1 Server URL (e.g. https://host:8010): ")
+		fmt.Print("TM1 REST API URL: ")
 		url, _ = reader.ReadString('\n')
 		url = strings.TrimSpace(url)
 	}
@@ -440,7 +440,7 @@ func init() {
 	configCmd.AddCommand(configSettingsCmd)
 
 	// config add flags
-	configAddCmd.Flags().StringVar(&addFlagURL, "url", "", "TM1 server URL (https://host:port)")
+	configAddCmd.Flags().StringVar(&addFlagURL, "url", "", "TM1 REST API URL (https://host:port/api/v1)")
 	configAddCmd.Flags().StringVar(&addFlagUser, "user", "", "Username")
 	configAddCmd.Flags().StringVar(&addFlagPassword, "password", "", "Password (prefer TM1CLI_PASSWORD env var for security)")
 	configAddCmd.Flags().StringVar(&addFlagAuth, "auth", "", "Auth mode: basic or cam (default: basic)")
