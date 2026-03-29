@@ -309,6 +309,7 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 	}
 
 	f := excelize.NewFile()
+	defer f.Close()
 	sheet := "Sheet1"
 
 	rowIdx := 1
