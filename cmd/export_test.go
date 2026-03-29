@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -319,11 +320,6 @@ func TestRunExportStubs(t *testing.T) {
 			name:    "mdx flag returns v0.2.0 message",
 			args:    []string{"export", "Sales", "--mdx", "SELECT {[Measures].Members} ON COLUMNS FROM [Sales]"},
 			wantErr: "coming in v0.2.0",
-		},
-		{
-			name:    "out json file returns v0.1.1 message",
-			args:    []string{"export", "Sales", "--view", "Default", "--out", "report.json"},
-			wantErr: "coming in v0.1.1",
 		},
 		{
 			name:    "out xlsx returns v0.2.0 message",
@@ -647,6 +643,241 @@ func TestRunExport_ViewEndpointContainsCubeAndView(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// TestCellsetToRecords — unit tests for the cellsetToRecords function
+// ===========================================================================
+
+func TestCellsetToRecords(t *testing.T) {
+	tests := []struct {
+		name       string
+		resp       model.CellsetResponse
+		wantLen    int
+		wantKeys   []string               // keys that must exist in first record
+		wantValues map[string]interface{} // expected values in first record
+	}{
+		{
+			name: "normal 2-axis with 2 cols and 2 rows",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{
+						Ordinal: 0,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+							{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+						},
+					},
+					{
+						Ordinal: 1,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+							{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+						},
+					},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 1000.0},
+					{Ordinal: 1, Value: 2000.0},
+					{Ordinal: 2, Value: 500.0},
+					{Ordinal: 3, Value: 800.0},
+				},
+			},
+			wantLen:  2,
+			wantKeys: []string{"DIM1", "Jan", "Feb"},
+			wantValues: map[string]interface{}{
+				"DIM1": "Revenue",
+				"Jan":  1000.0,
+				"Feb":  2000.0,
+			},
+		},
+		{
+			name: "multi-member row headers produce DIM1 and DIM2",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{
+						Ordinal: 0,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Q1"}}},
+						},
+					},
+					{
+						Ordinal: 1,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "US"}, {Name: "Revenue"}}},
+						},
+					},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 500.0},
+				},
+			},
+			wantLen:  1,
+			wantKeys: []string{"DIM1", "DIM2", "Q1"},
+			wantValues: map[string]interface{}{
+				"DIM1": "US",
+				"DIM2": "Revenue",
+				"Q1":   500.0,
+			},
+		},
+		{
+			name: "multi-member column headers joined with /",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{
+						Ordinal: 0,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}, {Name: "Actual"}}},
+						},
+					},
+					{
+						Ordinal: 1,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+						},
+					},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 100.0},
+				},
+			},
+			wantLen:  1,
+			wantKeys: []string{"DIM1", "Jan / Actual"},
+			wantValues: map[string]interface{}{
+				"DIM1":         "Revenue",
+				"Jan / Actual": 100.0,
+			},
+		},
+		{
+			name: "fewer than 2 axes returns empty slice",
+			resp: model.CellsetResponse{
+				Axes:  []model.CellsetAxis{{Ordinal: 0}},
+				Cells: nil,
+			},
+			wantLen: 0,
+		},
+		{
+			name: "0 column tuples returns empty slice",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Row1"}}},
+					}},
+				},
+				Cells: nil,
+			},
+			wantLen: 0,
+		},
+		{
+			name: "null cell values preserved as nil",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{
+						Ordinal: 0,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+						},
+					},
+					{
+						Ordinal: 1,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Sales"}}},
+						},
+					},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: nil},
+				},
+			},
+			wantLen:  1,
+			wantKeys: []string{"DIM1", "Jan"},
+			wantValues: map[string]interface{}{
+				"DIM1": "Sales",
+				"Jan":  nil,
+			},
+		},
+		{
+			name: "sparse cells with missing ordinals produce nil",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{
+						Ordinal: 0,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+							{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+						},
+					},
+					{
+						Ordinal: 1,
+						Tuples: []model.CellsetTuple{
+							{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+						},
+					},
+				},
+				// Only ordinal 1 present; ordinal 0 is missing
+				Cells: []model.CellsetCell{
+					{Ordinal: 1, Value: 999.0},
+				},
+			},
+			wantLen:  1,
+			wantKeys: []string{"DIM1", "Jan", "Feb"},
+			wantValues: map[string]interface{}{
+				"DIM1": "Revenue",
+				"Jan":  nil,
+				"Feb":  999.0,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records := cellsetToRecords(tt.resp)
+
+			if len(records) != tt.wantLen {
+				t.Fatalf("got %d records, want %d", len(records), tt.wantLen)
+			}
+
+			if tt.wantLen == 0 {
+				return
+			}
+
+			first := records[0]
+			for _, key := range tt.wantKeys {
+				if _, ok := first[key]; !ok {
+					t.Errorf("record missing key %q, got keys: %v", key, mapKeys(first))
+				}
+			}
+
+			for key, wantVal := range tt.wantValues {
+				gotVal, ok := first[key]
+				if !ok {
+					t.Errorf("record missing key %q", key)
+					continue
+				}
+				if wantVal == nil {
+					if gotVal != nil {
+						t.Errorf("key %q = %v, want nil", key, gotVal)
+					}
+					continue
+				}
+				// Compare as strings for simplicity (handles float formatting)
+				gotStr := fmt.Sprintf("%v", gotVal)
+				wantStr := fmt.Sprintf("%v", wantVal)
+				if gotStr != wantStr {
+					t.Errorf("key %q = %v, want %v", key, gotVal, wantVal)
+				}
+			}
+		})
+	}
+}
+
+func mapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // ---------------------------------------------------------------------------
 // TestBuildCellsetRows — unit tests for the buildCellsetRows function
 // ---------------------------------------------------------------------------
@@ -938,6 +1169,187 @@ func TestWriteCSV(t *testing.T) {
 			}
 		})
 	})
+}
+
+// ===========================================================================
+// TestRunExport_JSONFile — integration tests for JSON file output
+// ===========================================================================
+
+func TestRunExport_JSONFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "export.json")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// File should exist
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+
+	// Should be valid JSON array
+	var records []map[string]interface{}
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatalf("output file is not valid JSON array: %v\ncontents: %s", err, string(data))
+	}
+
+	// Should have 2 records (Revenue and Cost rows)
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+
+	// First record should be Revenue row
+	first := records[0]
+	if first["DIM1"] != "Revenue" {
+		t.Errorf("first record DIM1 = %v, want Revenue", first["DIM1"])
+	}
+	// JSON numbers unmarshal as float64
+	if first["Jan"] != 1000.0 {
+		t.Errorf("first record Jan = %v, want 1000", first["Jan"])
+	}
+	if first["Feb"] != 2000.0 {
+		t.Errorf("first record Feb = %v, want 2000", first["Feb"])
+	}
+
+	// Second record should be Cost row
+	second := records[1]
+	if second["DIM1"] != "Cost" {
+		t.Errorf("second record DIM1 = %v, want Cost", second["DIM1"])
+	}
+	if second["Jan"] != 500.0 {
+		t.Errorf("second record Jan = %v, want 500", second["Jan"])
+	}
+
+	// Stderr should contain success message
+	if !strings.Contains(captured.Stderr, "Wrote 2 records") {
+		t.Errorf("stderr should contain success message, got:\n%s", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, outFile) {
+		t.Errorf("stderr should contain file path, got:\n%s", captured.Stderr)
+	}
+
+	// Stdout should be empty (output goes to file, not stdout)
+	if strings.TrimSpace(captured.Stdout) != "" {
+		t.Errorf("stdout should be empty when writing to file, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunExport_JSONFileInvalidPath(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportOut = "/nonexistent/dir/export.json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Cannot write file") {
+		t.Errorf("stderr should contain 'Cannot write file', got:\n%s", captured.Stderr)
+	}
+}
+
+func TestRunExport_JSONFileOverwrite(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "export.json")
+	exportOut = outFile
+
+	// Write existing content to the file
+	os.WriteFile(outFile, []byte("old content"), 0644)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// File should be overwritten with valid JSON
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+
+	var records []map[string]interface{}
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatalf("overwritten file is not valid JSON: %v", err)
+	}
+	if len(records) != 2 {
+		t.Errorf("expected 2 records after overwrite, got %d", len(records))
+	}
+}
+
+func TestRunExport_JSONFileEmptyCellset(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "empty.json")
+	exportOut = outFile
+
+	// Return a cellset with fewer than 2 axes
+	emptyResp := model.CellsetResponse{
+		Axes:  []model.CellsetAxis{{Ordinal: 0}},
+		Cells: nil,
+	}
+	emptyData, _ := json.Marshal(emptyResp)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(emptyData)
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+
+	// Should be an empty JSON array
+	var records []map[string]interface{}
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatalf("output is not valid JSON: %v\ncontents: %s", err, string(data))
+	}
+	if len(records) != 0 {
+		t.Errorf("expected 0 records for empty cellset, got %d", len(records))
+	}
+
+	// Stderr should say 0 records
+	if !strings.Contains(captured.Stderr, "Wrote 0 records") {
+		t.Errorf("stderr should contain 'Wrote 0 records', got:\n%s", captured.Stderr)
+	}
 }
 
 // ---------------------------------------------------------------------------
