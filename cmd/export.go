@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -13,9 +14,10 @@ import (
 )
 
 var (
-	exportView string
-	exportMDX  string
-	exportOut  string
+	exportView     string
+	exportMDX      string
+	exportOut      string
+	exportNoHeader bool
 )
 
 var exportCmd = &cobra.Command{
@@ -29,6 +31,7 @@ REST API:      GET /Cubes('name')/Views('view')/tm1.Execute
                POST /ExecuteMDX`,
 	Example: `  tm1cli export "Sales" --view "Default"
   tm1cli export "Sales" --view "Default" -o report.csv
+  tm1cli export "Sales" --view "Default" -o report.json
   tm1cli export "Sales" --view "Default" --output json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExport,
@@ -46,16 +49,13 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("MDX export is not yet implemented (coming in v0.2.0). Use --view instead.")
 	}
 
-	// Validate file output format early (before API call)
-	exportOutLower := strings.ToLower(exportOut)
+	// Validate file extension before doing any network calls
 	if exportOut != "" {
-		if strings.HasSuffix(exportOutLower, ".xlsx") {
+		ext := strings.ToLower(exportOut)
+		if strings.HasSuffix(ext, ".xlsx") {
 			return fmt.Errorf("XLSX export is not yet implemented (coming in v0.2.0).")
 		}
-		if strings.HasSuffix(exportOutLower, ".csv") {
-			return fmt.Errorf("CSV export is not yet implemented (coming in v0.1.1).")
-		}
-		if !strings.HasSuffix(exportOutLower, ".json") {
+		if !strings.HasSuffix(ext, ".csv") && !strings.HasSuffix(ext, ".json") {
 			return fmt.Errorf("Unsupported file format. Supported: .csv, .json, .xlsx")
 		}
 	}
@@ -88,7 +88,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// JSON file output
-	if strings.HasSuffix(exportOutLower, ".json") {
+	if strings.HasSuffix(strings.ToLower(exportOut), ".json") {
 		records := cellsetToRecords(resp)
 		if err := writeJSONFile(exportOut, records); err != nil {
 			output.PrintError(err.Error(), jsonMode)
@@ -96,6 +96,11 @@ func runExport(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "Wrote %d records to %s\n", len(records), exportOut)
 		return nil
+	}
+
+	// CSV file output
+	if strings.HasSuffix(strings.ToLower(exportOut), ".csv") {
+		return writeCSV(resp, exportOut, exportNoHeader)
 	}
 
 	if jsonMode {
@@ -177,10 +182,11 @@ func writeJSONFile(filePath string, data interface{}) error {
 	return nil
 }
 
-func printCellsetTable(resp model.CellsetResponse) {
+// buildCellsetRows converts a CellsetResponse into headers and row data.
+// Returns nil, nil if the response has fewer than 2 axes or 0 column tuples.
+func buildCellsetRows(resp model.CellsetResponse) ([]string, [][]string) {
 	if len(resp.Axes) < 2 {
-		fmt.Println("No data returned.")
-		return
+		return nil, nil
 	}
 
 	colAxis := resp.Axes[0]
@@ -188,8 +194,7 @@ func printCellsetTable(resp model.CellsetResponse) {
 
 	numCols := len(colAxis.Tuples)
 	if numCols == 0 {
-		fmt.Println("No data returned.")
-		return
+		return nil, nil
 	}
 
 	// Build column headers
@@ -208,7 +213,7 @@ func printCellsetTable(resp model.CellsetResponse) {
 		rowMemberCount = len(rowAxis.Tuples[0].Members)
 	}
 
-	// Table headers
+	// Headers
 	headers := make([]string, 0, rowMemberCount+numCols)
 	for i := 0; i < rowMemberCount; i++ {
 		headers = append(headers, fmt.Sprintf("DIM%d", i+1))
@@ -239,7 +244,52 @@ func printCellsetTable(resp model.CellsetResponse) {
 		rows[r] = row
 	}
 
+	return headers, rows
+}
+
+func printCellsetTable(resp model.CellsetResponse) {
+	headers, rows := buildCellsetRows(resp)
+	if headers == nil {
+		fmt.Println("No data returned.")
+		return
+	}
 	output.PrintTable(headers, rows)
+}
+
+func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error {
+	headers, rows := buildCellsetRows(resp)
+	if headers == nil {
+		fmt.Fprintln(os.Stderr, "No data to export.")
+		return nil
+	}
+
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("Cannot create file: %s", err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+
+	if !noHeader {
+		if err := w.Write(headers); err != nil {
+			return fmt.Errorf("Cannot write CSV header: %s", err)
+		}
+	}
+
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("Cannot write CSV row: %s", err)
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("Cannot write CSV: %s", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rows), filePath)
+	return nil
 }
 
 func init() {
@@ -247,4 +297,5 @@ func init() {
 	exportCmd.Flags().StringVar(&exportView, "view", "", "Saved view name")
 	exportCmd.Flags().StringVar(&exportMDX, "mdx", "", "MDX query string (v0.2.0)")
 	exportCmd.Flags().StringVarP(&exportOut, "out", "o", "", "Output file path (.csv, .json)")
+	exportCmd.Flags().BoolVar(&exportNoHeader, "no-header", false, "Exclude header row from CSV output")
 }

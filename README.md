@@ -1,5 +1,11 @@
 # tm1cli
 
+[![Release](https://img.shields.io/github/v/release/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/KimKaoPoo/tm1cli/total)](https://github.com/KimKaoPoo/tm1cli/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/KimKaoPoo/tm1cli/ci.yml)](https://github.com/KimKaoPoo/tm1cli/actions/workflows/ci.yml)
+
 A command-line tool for IBM TM1 / Planning Analytics REST API.
 
 Manage TM1 servers, list cubes and dimensions, run TI processes, and export data — all from the terminal.
