@@ -1492,6 +1492,28 @@ func TestRunExport_CSVUsesPOST(t *testing.T) {
 	}
 }
 
+func TestRunExport_CSVInvalidPath(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportOut = "/nonexistent/dir/report.csv"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Cannot create file") {
+		t.Errorf("stderr should contain 'Cannot create file', got:\n%s", captured.Stderr)
+	}
+}
+
 func TestRunExport_CSVServerError(t *testing.T) {
 	resetCmdFlags(t)
 	exportView = "Default"

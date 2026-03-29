@@ -100,7 +100,11 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	// CSV file output
 	if strings.HasSuffix(strings.ToLower(exportOut), ".csv") {
-		return writeCSV(resp, exportOut, exportNoHeader)
+		if err := writeCSV(resp, exportOut, exportNoHeader); err != nil {
+			output.PrintError(err.Error(), jsonMode)
+			return errSilent
+		}
+		return nil
 	}
 
 	// XLSX file output
