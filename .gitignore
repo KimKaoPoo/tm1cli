@@ -27,3 +27,11 @@ Thumbs.db
 # Claude
 CLAUDE.md
 .claude/
+
+.mcp.json
+
+# GoReleaser
+dist/
+
+# Implementation plan (temporary)
+IMPLEMENTATION_PLAN.md
