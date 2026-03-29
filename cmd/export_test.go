@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
@@ -316,11 +319,6 @@ func TestRunExportStubs(t *testing.T) {
 			name:    "mdx flag returns v0.2.0 message",
 			args:    []string{"export", "Sales", "--mdx", "SELECT {[Measures].Members} ON COLUMNS FROM [Sales]"},
 			wantErr: "coming in v0.2.0",
-		},
-		{
-			name:    "out csv returns v0.1.1 message",
-			args:    []string{"export", "Sales", "--view", "Default", "--out", "report.csv"},
-			wantErr: "coming in v0.1.1",
 		},
 		{
 			name:    "out json file returns v0.1.1 message",
@@ -646,5 +644,423 @@ func TestRunExport_ViewEndpointContainsCubeAndView(t *testing.T) {
 	}
 	if !strings.Contains(capturedPath, "Views('MyView')") {
 		t.Errorf("request path should contain view name, got: %s", capturedPath)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestBuildCellsetRows — unit tests for the buildCellsetRows function
+// ---------------------------------------------------------------------------
+
+func TestBuildCellsetRows(t *testing.T) {
+	tests := []struct {
+		name        string
+		resp        model.CellsetResponse
+		wantHeaders []string
+		wantRows    [][]string
+		wantNil     bool
+	}{
+		{
+			name: "normal 2-axis data",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+						{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+					}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+						{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+					}},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 100.0},
+					{Ordinal: 1, Value: 200.0},
+					{Ordinal: 2, Value: 50.0},
+					{Ordinal: 3, Value: 80.0},
+				},
+			},
+			wantHeaders: []string{"DIM1", "Jan", "Feb"},
+			wantRows: [][]string{
+				{"Revenue", "100", "200"},
+				{"Cost", "50", "80"},
+			},
+		},
+		{
+			name: "multi-member column headers",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}, {Name: "Actual"}}},
+					}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+					}},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 100.0},
+				},
+			},
+			wantHeaders: []string{"DIM1", "Jan / Actual"},
+			wantRows:    [][]string{{"Revenue", "100"}},
+		},
+		{
+			name: "multi-member row headers",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Q1"}}},
+					}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "US"}, {Name: "Revenue"}}},
+					}},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: 500.0},
+				},
+			},
+			wantHeaders: []string{"DIM1", "DIM2", "Q1"},
+			wantRows:    [][]string{{"US", "Revenue", "500"}},
+		},
+		{
+			name: "null cell values as empty strings",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+					}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Sales"}}},
+					}},
+				},
+				Cells: []model.CellsetCell{
+					{Ordinal: 0, Value: nil},
+				},
+			},
+			wantHeaders: []string{"DIM1", "Jan"},
+			wantRows:    [][]string{{"Sales", ""}},
+		},
+		{
+			name: "fewer than 2 axes returns nil",
+			resp: model.CellsetResponse{
+				Axes:  []model.CellsetAxis{{Ordinal: 0}},
+				Cells: nil,
+			},
+			wantNil: true,
+		},
+		{
+			name: "0 column tuples returns nil",
+			resp: model.CellsetResponse{
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "Row1"}}},
+					}},
+				},
+				Cells: nil,
+			},
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers, rows := buildCellsetRows(tt.resp)
+
+			if tt.wantNil {
+				if headers != nil || rows != nil {
+					t.Errorf("expected nil, got headers=%v rows=%v", headers, rows)
+				}
+				return
+			}
+
+			if len(headers) != len(tt.wantHeaders) {
+				t.Fatalf("headers length = %d, want %d", len(headers), len(tt.wantHeaders))
+			}
+			for i, h := range headers {
+				if h != tt.wantHeaders[i] {
+					t.Errorf("headers[%d] = %q, want %q", i, h, tt.wantHeaders[i])
+				}
+			}
+
+			if len(rows) != len(tt.wantRows) {
+				t.Fatalf("rows length = %d, want %d", len(rows), len(tt.wantRows))
+			}
+			for i, row := range rows {
+				if len(row) != len(tt.wantRows[i]) {
+					t.Fatalf("rows[%d] length = %d, want %d", i, len(row), len(tt.wantRows[i]))
+				}
+				for j, v := range row {
+					if v != tt.wantRows[i][j] {
+						t.Errorf("rows[%d][%d] = %q, want %q", i, j, v, tt.wantRows[i][j])
+					}
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestWriteCSV — unit tests for the writeCSV function
+// ---------------------------------------------------------------------------
+
+func TestWriteCSV(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 1000.0},
+			{Ordinal: 1, Value: 2000.0},
+			{Ordinal: 2, Value: 500.0},
+			{Ordinal: 3, Value: 800.0},
+		},
+	}
+
+	t.Run("writes CSV with headers", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "out.csv")
+
+		captured := captureAll(t, func() {
+			err := writeCSV(resp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		// Verify success message on stderr
+		if !strings.Contains(captured.Stderr, "Exported 2 rows") {
+			t.Errorf("stderr should contain export summary, got: %s", captured.Stderr)
+		}
+
+		// Read and parse CSV
+		f, err := os.Open(outFile)
+		if err != nil {
+			t.Fatalf("cannot open output file: %v", err)
+		}
+		defer f.Close()
+
+		records, err := csv.NewReader(f).ReadAll()
+		if err != nil {
+			t.Fatalf("cannot parse CSV: %v", err)
+		}
+
+		// 1 header + 2 data rows = 3 total
+		if len(records) != 3 {
+			t.Fatalf("expected 3 CSV records, got %d", len(records))
+		}
+
+		// Check header
+		wantHeader := []string{"DIM1", "Jan", "Feb"}
+		for i, h := range records[0] {
+			if h != wantHeader[i] {
+				t.Errorf("header[%d] = %q, want %q", i, h, wantHeader[i])
+			}
+		}
+
+		// Check data
+		if records[1][0] != "Revenue" || records[1][1] != "1000" || records[1][2] != "2000" {
+			t.Errorf("row 1 = %v, want [Revenue 1000 2000]", records[1])
+		}
+		if records[2][0] != "Cost" || records[2][1] != "500" || records[2][2] != "800" {
+			t.Errorf("row 2 = %v, want [Cost 500 800]", records[2])
+		}
+	})
+
+	t.Run("writes CSV without headers when noHeader is true", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "out.csv")
+
+		captureAll(t, func() {
+			err := writeCSV(resp, outFile, true)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := os.Open(outFile)
+		if err != nil {
+			t.Fatalf("cannot open output file: %v", err)
+		}
+		defer f.Close()
+
+		records, err := csv.NewReader(f).ReadAll()
+		if err != nil {
+			t.Fatalf("cannot parse CSV: %v", err)
+		}
+
+		// 2 data rows, no header
+		if len(records) != 2 {
+			t.Fatalf("expected 2 CSV records (no header), got %d", len(records))
+		}
+		if records[0][0] != "Revenue" {
+			t.Errorf("first row should be data, got: %v", records[0])
+		}
+	})
+
+	t.Run("empty cellset prints message and creates no file", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "out.csv")
+		emptyResp := model.CellsetResponse{
+			Axes:  []model.CellsetAxis{{Ordinal: 0}},
+			Cells: nil,
+		}
+
+		captured := captureAll(t, func() {
+			err := writeCSV(emptyResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		if !strings.Contains(captured.Stderr, "No data to export") {
+			t.Errorf("stderr should contain 'No data to export', got: %s", captured.Stderr)
+		}
+
+		if _, err := os.Stat(outFile); err == nil {
+			t.Error("file should not be created for empty cellset")
+		}
+	})
+
+	t.Run("returns error for invalid path", func(t *testing.T) {
+		badPath := filepath.Join(t.TempDir(), "nonexistent", "subdir", "out.csv")
+
+		captureAll(t, func() {
+			err := writeCSV(resp, badPath, false)
+			if err == nil {
+				t.Fatal("expected error for invalid path, got nil")
+			}
+			if !strings.Contains(err.Error(), "Cannot create file") {
+				t.Errorf("error should mention file creation, got: %s", err.Error())
+			}
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests — CSV file export via runExport
+// ---------------------------------------------------------------------------
+
+func TestRunExport_CSVFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Verify success message
+	if !strings.Contains(captured.Stderr, "Exported") {
+		t.Errorf("stderr should contain export message, got: %s", captured.Stderr)
+	}
+
+	// Nothing on stdout (file output, not screen)
+	if strings.TrimSpace(captured.Stdout) != "" {
+		t.Errorf("stdout should be empty for file output, got: %s", captured.Stdout)
+	}
+
+	// Read and verify CSV
+	f, err := os.Open(outFile)
+	if err != nil {
+		t.Fatalf("cannot open output file: %v", err)
+	}
+	defer f.Close()
+
+	records, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatalf("cannot parse CSV: %v", err)
+	}
+
+	if len(records) != 3 { // 1 header + 2 data
+		t.Fatalf("expected 3 records, got %d", len(records))
+	}
+	if records[0][0] != "DIM1" {
+		t.Errorf("header[0] = %q, want DIM1", records[0][0])
+	}
+	if records[1][1] != "1000" {
+		t.Errorf("Revenue/Jan = %q, want 1000", records[1][1])
+	}
+}
+
+func TestRunExport_CSVNoHeader(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.csv")
+	exportOut = outFile
+	exportNoHeader = true
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	f, err := os.Open(outFile)
+	if err != nil {
+		t.Fatalf("cannot open output file: %v", err)
+	}
+	defer f.Close()
+
+	records, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatalf("cannot parse CSV: %v", err)
+	}
+
+	// 2 data rows only, no header
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records (no header), got %d", len(records))
+	}
+	if records[0][0] != "Revenue" {
+		t.Errorf("first row should be data, got: %v", records[0])
+	}
+}
+
+func TestRunExport_CSVServerError(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`View not found`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("stderr should contain error, got: %s", captured.Stderr)
+	}
+
+	// File should not be created
+	if _, err := os.Stat(outFile); err == nil {
+		t.Error("CSV file should not be created on server error")
 	}
 }
