@@ -1043,6 +1043,50 @@ func TestConfigEdit(t *testing.T) {
 			t.Errorf("Namespace = %q, want 'LDAP'", srv.Namespace)
 		}
 	})
+
+	t.Run("uses TM1CLI_PASSWORD env var when Enter pressed for password", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "myserver",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"myserver": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("oldpass"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+		t.Setenv("TM1CLI_PASSWORD", "env-password")
+
+		// Enter through all fields, empty password = use env var
+		withStdin(t, "\n\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"myserver"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		// Password in config should still be the old stored one (env var only used for connection test)
+		decoded, _ := config.DecodePassword(saved.Servers["myserver"].Password)
+		if decoded != "oldpass" {
+			t.Errorf("stored password = %q, want 'oldpass' (env var should not change stored value)", decoded)
+		}
+	})
 }
 
 // --- config add ---

@@ -358,6 +358,8 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	if newPassword != "" {
 		srv.Password = config.EncodePassword(newPassword)
 		password = newPassword
+	} else if envPass := os.Getenv("TM1CLI_PASSWORD"); envPass != "" {
+		password = envPass
 	} else {
 		password, err = config.DecodePassword(srv.Password)
 		if err != nil {
