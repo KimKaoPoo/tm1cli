@@ -20,6 +20,11 @@ type CellsetMember struct {
 }
 
 type CellsetResponse struct {
+	ID    string        `json:"ID,omitempty"`
 	Axes  []CellsetAxis `json:"Axes"`
 	Cells []CellsetCell `json:"Cells"`
+}
+
+type CellsCollectionResponse struct {
+	Value []CellsetCell `json:"value"`
 }
