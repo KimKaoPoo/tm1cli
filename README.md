@@ -1,5 +1,11 @@
 # tm1cli
 
+[![Release](https://img.shields.io/github/v/release/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/KimKaoPoo/tm1cli/total)](https://github.com/KimKaoPoo/tm1cli/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/KimKaoPoo/tm1cli)](https://github.com/KimKaoPoo/tm1cli/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/KimKaoPoo/tm1cli/ci.yml)](https://github.com/KimKaoPoo/tm1cli/actions/workflows/ci.yml)
+
 A command-line tool for IBM TM1 / Planning Analytics REST API.
 
 Manage TM1 servers, list cubes and dimensions, run TI processes, and export data — all from the terminal.
@@ -14,6 +20,52 @@ Manage TM1 servers, list cubes and dimensions, run TI processes, and export data
 - **Secure** — no hardcoded credentials; supports environment variable overrides
 
 ## Install
+
+### Download binary (recommended)
+
+Download the latest release for your platform from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest).
+
+**macOS (Apple Silicon):**
+
+```bash
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_arm64.tar.gz
+tar xzf tm1cli.tar.gz
+sudo mv tm1cli /usr/local/bin/
+```
+
+**macOS (Intel):**
+
+```bash
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_amd64.tar.gz
+tar xzf tm1cli.tar.gz
+sudo mv tm1cli /usr/local/bin/
+```
+
+**Linux (x86_64):**
+
+```bash
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_amd64.tar.gz
+tar xzf tm1cli.tar.gz
+sudo mv tm1cli /usr/local/bin/
+```
+
+**Linux (ARM64):**
+
+```bash
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_arm64.tar.gz
+tar xzf tm1cli.tar.gz
+sudo mv tm1cli /usr/local/bin/
+```
+
+**Windows:**
+
+Download `tm1cli_0.1.0_windows_amd64.zip` from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest), extract, and add `tm1cli.exe` to your PATH.
+
+### Go install
+
+```bash
+go install github.com/KimKaoPoo/tm1cli@latest
+```
 
 ### From source
 
