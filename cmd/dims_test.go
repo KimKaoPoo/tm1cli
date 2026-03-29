@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
@@ -784,4 +785,221 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ============================================================
+// Integration tests — runDims / runDimsMembers with httptest
+// ============================================================
+
+func TestRunDims_EndToEnd(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(dimsJSON("Region", "Period", "Account"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDims(dimsCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "NAME") {
+		t.Errorf("output missing header 'NAME'")
+	}
+	for _, name := range []string{"Region", "Period", "Account"} {
+		if !strings.Contains(captured.Stdout, name) {
+			t.Errorf("output missing dimension %q", name)
+		}
+	}
+}
+
+func TestRunDims_SystemDimsHiddenByDefault(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(dimsJSON("Region", "}Cubes", "Period", "}Dimensions"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDims(dimsCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "Region") {
+		t.Error("output should contain 'Region'")
+	}
+	if strings.Contains(captured.Stdout, "}Cubes") {
+		t.Error("output should NOT contain system dim '}Cubes'")
+	}
+}
+
+func TestRunDimsMembers_EndToEnd(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(
+			[]string{"Jan", "Feb", "Mar"},
+			[]string{"Numeric", "Numeric", "Numeric"},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "NAME") {
+		t.Errorf("output missing header 'NAME'")
+	}
+	if !strings.Contains(captured.Stdout, "TYPE") {
+		t.Errorf("output missing header 'TYPE'")
+	}
+	if !strings.Contains(captured.Stdout, "Jan") {
+		t.Errorf("output missing 'Jan'")
+	}
+	if !strings.Contains(captured.Stdout, "Numeric") {
+		t.Errorf("output missing type 'Numeric'")
+	}
+}
+
+func TestRunDimsMembers_CustomHierarchy(t *testing.T) {
+	resetCmdFlags(t)
+	membersHierarchy = "AlternateHierarchy"
+
+	var capturedPath string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"East", "West"}, []string{"Numeric", "Numeric"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Region"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Endpoint should include the custom hierarchy name
+	if !strings.Contains(capturedPath, "AlternateHierarchy") {
+		t.Errorf("request path should contain custom hierarchy 'AlternateHierarchy', got: %s", capturedPath)
+	}
+	// Default hierarchy (dimension name) should NOT be in the path
+	if strings.Contains(capturedPath, "Hierarchies('Region')") {
+		t.Errorf("request path should use custom hierarchy, not dimension name, got: %s", capturedPath)
+	}
+}
+
+func TestRunDimsMembers_DefaultHierarchyMatchesDimName(t *testing.T) {
+	resetCmdFlags(t)
+	// membersHierarchy is empty — should default to dimension name
+
+	var capturedPath string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Q1"}, []string{"Consolidated"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Default hierarchy should match dimension name "Period"
+	if !strings.Contains(capturedPath, "Hierarchies('Period')") {
+		t.Errorf("request path should use dimension name as default hierarchy, got: %s", capturedPath)
+	}
+}
+
+func TestRunDimsMembers_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"Dimension not found"}`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"NonExistent"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("stderr should contain 'Not found' for 404, got:\n%s", captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_JSONOutput(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(
+			[]string{"Jan", "Feb"},
+			[]string{"Numeric", "Numeric"},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var result []model.Element
+	if err := json.Unmarshal([]byte(captured.Stdout), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 elements, got %d", len(result))
+	}
+}
+
+func TestRunDims_FilterFallbackWarning(t *testing.T) {
+	resetCmdFlags(t)
+	dimsFilter = "region"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.RawQuery
+		if strings.Contains(query, "$filter") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"not supported"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(dimsJSON("Region", "RegionalSales", "Period"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDims(dimsCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("should show filter fallback warning")
+	}
+	if !strings.Contains(captured.Stdout, "Region") {
+		t.Errorf("output should contain 'Region' (matches filter)")
+	}
+	if strings.Contains(captured.Stdout, "Period") {
+		t.Errorf("output should NOT contain 'Period' (doesn't match 'region' filter)")
+	}
 }

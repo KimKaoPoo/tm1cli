@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -664,5 +666,298 @@ func TestProcessRunURLEncoding(t *testing.T) {
 				t.Errorf("endpoint = %q, want %q", endpoint, tt.wantEndpoint)
 			}
 		})
+	}
+}
+
+// ============================================================
+// Integration tests — runProcessList / runProcessRun with httptest
+// ============================================================
+
+func TestRunProcessList_EndToEnd(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(processesJSON("LoadData", "RunReport", "ExportSales"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessList(processListCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "NAME") {
+		t.Errorf("output missing header 'NAME'")
+	}
+	for _, name := range []string{"LoadData", "RunReport", "ExportSales"} {
+		if !strings.Contains(captured.Stdout, name) {
+			t.Errorf("output missing process %q", name)
+		}
+	}
+}
+
+func TestRunProcessList_SystemProcessesHidden(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(processesJSON("LoadData", "}SecurityRefresh", "RunReport"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessList(processListCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "LoadData") {
+		t.Error("output should contain 'LoadData'")
+	}
+	if strings.Contains(captured.Stdout, "}SecurityRefresh") {
+		t.Error("output should NOT contain system process '}SecurityRefresh'")
+	}
+}
+
+func TestRunProcessRun_Success(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "tm1.Execute") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "executed successfully") {
+		t.Errorf("output should contain success message, got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "Completed") {
+		t.Errorf("output should contain 'Completed' status, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessRun_WithParams(t *testing.T) {
+	resetCmdFlags(t)
+	procRunParams = []string{"pYear=2024", "pRegion=US"}
+
+	var capturedBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			body, _ := io.ReadAll(r.Body)
+			capturedBody = string(body)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Verify the POST body contains the parameters
+	if !strings.Contains(capturedBody, "pYear") {
+		t.Errorf("POST body should contain 'pYear', got: %s", capturedBody)
+	}
+	if !strings.Contains(capturedBody, "2024") {
+		t.Errorf("POST body should contain '2024', got: %s", capturedBody)
+	}
+	if !strings.Contains(capturedBody, "pRegion") {
+		t.Errorf("POST body should contain 'pRegion', got: %s", capturedBody)
+	}
+
+	// Verify JSON structure
+	var parsed model.ProcessExecuteBody
+	if err := json.Unmarshal([]byte(capturedBody), &parsed); err != nil {
+		t.Fatalf("POST body is not valid JSON: %v", err)
+	}
+	if len(parsed.Parameters) != 2 {
+		t.Errorf("expected 2 parameters, got %d", len(parsed.Parameters))
+	}
+}
+
+func TestRunProcessRun_ParamWithEquals(t *testing.T) {
+	resetCmdFlags(t)
+	procRunParams = []string{"pFilter=Region=US=East"}
+
+	var capturedBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			body, _ := io.ReadAll(r.Body)
+			capturedBody = string(body)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Value should be "Region=US=East" (split on first = only)
+	var parsed model.ProcessExecuteBody
+	if err := json.Unmarshal([]byte(capturedBody), &parsed); err != nil {
+		t.Fatalf("POST body is not valid JSON: %v", err)
+	}
+	if len(parsed.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(parsed.Parameters))
+	}
+	if parsed.Parameters[0].Name != "pFilter" {
+		t.Errorf("param name = %q, want 'pFilter'", parsed.Parameters[0].Name)
+	}
+	if parsed.Parameters[0].Value != "Region=US=East" {
+		t.Errorf("param value = %q, want 'Region=US=East'", parsed.Parameters[0].Value)
+	}
+}
+
+func TestRunProcessRun_ServerError(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`Internal server error`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"FailProcess"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "failed") {
+		t.Errorf("output should contain 'failed', got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "Error") {
+		t.Errorf("output should contain 'Error' status, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessRun_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Process not found`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"NonExistent"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "failed") {
+		t.Errorf("output should contain 'failed', got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessRun_JSONOutput(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var result model.ProcessRunResult
+	if err := json.Unmarshal([]byte(captured.Stdout), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if result.Process != "LoadData" {
+		t.Errorf("process = %q, want 'LoadData'", result.Process)
+	}
+	if result.Status != "completed" {
+		t.Errorf("status = %q, want 'completed'", result.Status)
+	}
+}
+
+func TestRunProcessRun_JSONOutputError(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`Server Error`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessRun(processRunCmd, []string{"FailProcess"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	var result model.ProcessRunResult
+	if err := json.Unmarshal([]byte(captured.Stdout), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if result.Status != "error" {
+		t.Errorf("status = %q, want 'error'", result.Status)
+	}
+	if result.Process != "FailProcess" {
+		t.Errorf("process = %q, want 'FailProcess'", result.Process)
+	}
+}
+
+func TestRunProcessList_FilterFallbackWarning(t *testing.T) {
+	resetCmdFlags(t)
+	procListFilter = "load"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.RawQuery
+		if strings.Contains(query, "$filter") {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(processesJSON("LoadData", "LoadBudget", "RunReport"))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessList(processListCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Error("should show filter fallback warning")
+	}
+	if !strings.Contains(captured.Stdout, "LoadData") {
+		t.Error("output should contain 'LoadData' (matches filter)")
+	}
+	if strings.Contains(captured.Stdout, "RunReport") {
+		t.Error("output should NOT contain 'RunReport' (doesn't match 'load' filter)")
 	}
 }

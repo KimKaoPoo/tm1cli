@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
@@ -479,5 +481,170 @@ func TestPrintCellsetTableJSONOutput(t *testing.T) {
 	// Should NOT contain table formatting
 	if strings.Contains(got, "DIM1") {
 		t.Errorf("JSON output should not contain table header 'DIM1', got:\n%s", got)
+	}
+}
+
+// ============================================================
+// Integration tests — runExport with httptest.NewServer
+// ============================================================
+
+// cellsetResponseJSON returns a mock TM1 cellset response for testing.
+func cellsetResponseJSON() []byte {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{
+				Ordinal: 0,
+				Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+				},
+			},
+			{
+				Ordinal: 1,
+				Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+				},
+			},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 1000.0},
+			{Ordinal: 1, Value: 2000.0},
+			{Ordinal: 2, Value: 500.0},
+			{Ordinal: 3, Value: 800.0},
+		},
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+func TestRunExport_ViewToScreen(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Should contain table with headers and data
+	if !strings.Contains(captured.Stdout, "Jan") {
+		t.Errorf("output missing column 'Jan', got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "Feb") {
+		t.Errorf("output missing column 'Feb', got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "Revenue") {
+		t.Errorf("output missing row 'Revenue', got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "1000") {
+		t.Errorf("output missing cell value '1000', got:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "800") {
+		t.Errorf("output missing cell value '800', got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunExport_JSONOutput(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	flagOutput = "json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Should be valid JSON containing Axes and Cells
+	var resp model.CellsetResponse
+	if err := json.Unmarshal([]byte(captured.Stdout), &resp); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if len(resp.Axes) != 2 {
+		t.Errorf("expected 2 axes, got %d", len(resp.Axes))
+	}
+	if len(resp.Cells) != 4 {
+		t.Errorf("expected 4 cells, got %d", len(resp.Cells))
+	}
+	// Should NOT contain table formatting
+	if strings.Contains(captured.Stdout, "DIM1") {
+		t.Error("JSON output should not contain table header 'DIM1'")
+	}
+}
+
+func TestRunExport_NoViewOrMDX(t *testing.T) {
+	resetCmdFlags(t)
+	// Neither view nor mdx set
+
+	err := runExport(exportCmd, []string{"MyCube"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--view") {
+		t.Errorf("error should mention --view, got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "MyCube") {
+		t.Errorf("error should contain cube name, got: %s", err.Error())
+	}
+}
+
+func TestRunExport_ServerError(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`View not found`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("stderr should contain 'Not found', got:\n%s", captured.Stderr)
+	}
+}
+
+func TestRunExport_ViewEndpointContainsCubeAndView(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "MyView"
+
+	var capturedPath string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"MyCube"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(capturedPath, "Cubes('MyCube')") {
+		t.Errorf("request path should contain cube name, got: %s", capturedPath)
+	}
+	if !strings.Contains(capturedPath, "Views('MyView')") {
+		t.Errorf("request path should contain view name, got: %s", capturedPath)
 	}
 }
