@@ -276,7 +276,18 @@ func runConfigUse(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// --- config edit (TODO: Phase 2) ---
+// --- config edit ---
+
+// readPasswordFn reads a password from the terminal without echo.
+// Defined as a variable so tests can override it.
+var readPasswordFn = func() (string, error) {
+	pwBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	return string(pwBytes), nil
+}
 
 var configEditCmd = &cobra.Command{
 	Use:   "edit <name>",
@@ -287,10 +298,120 @@ Shows current values in brackets. Press Enter to keep existing value.
 Re-tests connection after editing.`,
 	Example: `  tm1cli config edit myserver`,
 	Args:    cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: Phase 2 — implement interactive edit with current values shown
-		return fmt.Errorf("config edit is not yet implemented (coming in v0.2.0)")
-	},
+	RunE:    runConfigEdit,
+}
+
+func runConfigEdit(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	reader := bufio.NewReader(os.Stdin)
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		return fmt.Errorf("No connection configured. Run 'tm1cli config add' first.")
+	}
+
+	srv, ok := cfg.Servers[name]
+	if !ok {
+		return fmt.Errorf("Connection '%s' not found. Run 'tm1cli config list' to see available.", name)
+	}
+
+	fmt.Printf("Editing connection '%s'. Press Enter to keep current value.\n\n", name)
+
+	// URL
+	fmt.Printf("TM1 REST API URL [%s]: ", srv.URL)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input != "" {
+		srv.URL = input
+	}
+
+	// Auth mode
+	fmt.Printf("Auth mode (basic/cam) [%s]: ", srv.AuthMode)
+	input, _ = reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input != "" {
+		input = strings.ToLower(input)
+		if input != "basic" && input != "cam" {
+			return fmt.Errorf("auth mode must be 'basic' or 'cam'")
+		}
+		srv.AuthMode = input
+	}
+
+	// Namespace (CAM only)
+	if srv.AuthMode == "cam" {
+		if srv.Namespace != "" {
+			fmt.Printf("CAM namespace [%s]: ", srv.Namespace)
+		} else {
+			fmt.Print("CAM namespace: ")
+		}
+		input, _ = reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input != "" {
+			srv.Namespace = input
+		}
+	} else {
+		srv.Namespace = ""
+	}
+
+	// Username
+	fmt.Printf("Username [%s]: ", srv.User)
+	input, _ = reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input != "" {
+		srv.User = input
+	}
+
+	// Password
+	fmt.Print("Password [****]: ")
+	newPassword, err := readPasswordFn()
+	if err != nil {
+		return fmt.Errorf("cannot read password: %w", err)
+	}
+
+	password := ""
+	if newPassword != "" {
+		srv.Password = config.EncodePassword(newPassword)
+		password = newPassword
+	} else {
+		password, err = config.DecodePassword(srv.Password)
+		if err != nil {
+			return fmt.Errorf("cannot decode stored password: %w", err)
+		}
+	}
+
+	// Test connection
+	fmt.Print("Testing connection... ")
+	testClient, err := createClientFromServerConfig(srv, password, cfg.Settings.TLSVerify)
+	if err != nil {
+		fmt.Println("✗")
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		if !promptYesNo(reader, "Save anyway?") {
+			return nil
+		}
+	} else {
+		_, testErr := testClient.Get("Cubes?$top=1")
+		if testErr != nil {
+			fmt.Println("✗")
+			fmt.Fprintf(os.Stderr, "Error: %s\n", testErr)
+			if !promptYesNo(reader, "Save anyway?") {
+				return nil
+			}
+		} else {
+			fmt.Println("✓")
+		}
+	}
+
+	cfg.Servers[name] = srv
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("cannot save config: %w", err)
+	}
+
+	fmt.Printf("Connection '%s' updated.\n", name)
+	return nil
 }
 
 // --- config remove ---
