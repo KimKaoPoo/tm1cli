@@ -164,12 +164,15 @@ func writeJSONFile(filePath string, data interface{}) error {
 	if err != nil {
 		return fmt.Errorf("Cannot write file: %s", err.Error())
 	}
-	defer f.Close()
 
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(data); err != nil {
+		f.Close()
 		return fmt.Errorf("Cannot encode JSON: %s", err.Error())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("Cannot write file: %s", err.Error())
 	}
 	return nil
 }
