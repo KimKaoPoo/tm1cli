@@ -161,25 +161,8 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Test connection
-	fmt.Print("Testing connection... ")
-	testClient, err := createClientFromServerConfig(srv, password, cfg.Settings.TLSVerify)
-	if err != nil {
-		fmt.Println("✗")
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-		if !promptYesNo(reader, "Save anyway?") {
-			return nil
-		}
-	} else {
-		_, testErr := testClient.Get("Cubes?$top=1")
-		if testErr != nil {
-			fmt.Println("✗")
-			fmt.Fprintf(os.Stderr, "Error: %s\n", testErr)
-			if !promptYesNo(reader, "Save anyway?") {
-				return nil
-			}
-		} else {
-			fmt.Println("✓")
-		}
+	if !testConnection(reader, srv, password, cfg.Settings.TLSVerify) {
+		return nil
 	}
 
 	isFirst := len(cfg.Servers) == 0
@@ -383,25 +366,8 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Test connection
-	fmt.Print("Testing connection... ")
-	testClient, err := createClientFromServerConfig(srv, password, cfg.Settings.TLSVerify)
-	if err != nil {
-		fmt.Println("✗")
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-		if !promptYesNo(reader, "Save anyway?") {
-			return nil
-		}
-	} else {
-		_, testErr := testClient.Get("Cubes?$top=1")
-		if testErr != nil {
-			fmt.Println("✗")
-			fmt.Fprintf(os.Stderr, "Error: %s\n", testErr)
-			if !promptYesNo(reader, "Save anyway?") {
-				return nil
-			}
-		} else {
-			fmt.Println("✓")
-		}
+	if !testConnection(reader, srv, password, cfg.Settings.TLSVerify) {
+		return nil
 	}
 
 	cfg.Servers[name] = srv
@@ -586,4 +552,24 @@ func promptYesNo(reader *bufio.Reader, prompt string) bool {
 
 func createClientFromServerConfig(srv config.ServerConfig, password string, tlsVerify bool) (*client.Client, error) {
 	return client.NewClient(srv, password, tlsVerify, false)
+}
+
+// testConnection tests the TM1 connection and prompts to save anyway on failure.
+// Returns true if the caller should proceed with saving.
+func testConnection(reader *bufio.Reader, srv config.ServerConfig, password string, tlsVerify bool) bool {
+	fmt.Print("Testing connection... ")
+	testClient, err := createClientFromServerConfig(srv, password, tlsVerify)
+	if err != nil {
+		fmt.Println("✗")
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		return promptYesNo(reader, "Save anyway?")
+	}
+	_, testErr := testClient.Get("Cubes?$top=1")
+	if testErr != nil {
+		fmt.Println("✗")
+		fmt.Fprintf(os.Stderr, "Error: %s\n", testErr)
+		return promptYesNo(reader, "Save anyway?")
+	}
+	fmt.Println("✓")
+	return true
 }
