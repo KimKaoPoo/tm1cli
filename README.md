@@ -15,7 +15,7 @@ Manage TM1 servers, list cubes and dimensions, run TI processes, and export data
 - **Multi-server config** — save and switch between TM1 server connections
 - **Cubes & Dimensions** — list, filter, and browse cube structures and dimension members
 - **TI Processes** — list and execute TurboIntegrator processes with parameters
-- **Data Export** — export cube views to screen, CSV, or JSON
+- **Data Export** — export cube views to screen, CSV, JSON, or XLSX
 - **Flexible output** — table or JSON format, with filtering and pagination
 - **Secure** — no hardcoded credentials; supports environment variable overrides
 
@@ -164,9 +164,12 @@ tm1cli process run "LoadData" --param pSource=file.csv --param pYear=2024
 ### Export
 
 ```bash
-tm1cli export "Sales" --view "Default"              # print table to screen
-tm1cli export "Sales" --view "Default" -o data.csv  # write CSV file
-tm1cli export "Sales" --view "Default" --output json # JSON to screen
+tm1cli export "Sales" --view "Default"               # print table to screen
+tm1cli export "Sales" --view "Default" -o data.csv   # write CSV file
+tm1cli export "Sales" --view "Default" -o data.json  # write JSON file
+tm1cli export "Sales" --view "Default" -o report.xlsx # write Excel file
+tm1cli export "Sales" --view "Default" --output json  # JSON to screen
+tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without header
 ```
 
 ### Global Flags
@@ -188,7 +191,7 @@ tm1cli export "Sales" --view "Default" --output json # JSON to screen
 ## Roadmap
 
 - [x] v0.1.0 — Config, cubes, dims, members, process list/run, export view → table
-- [ ] v0.1.1 — Export view → CSV/JSON file
+- [x] v0.1.1 — Export view → CSV/JSON file
 - [ ] v0.2.0 — MDX export, XLSX output, config edit, CAM auth testing
 - [ ] v0.3.0 — OS keychain, tab completion, advanced features
 
