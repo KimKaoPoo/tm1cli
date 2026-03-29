@@ -1448,6 +1448,53 @@ func TestRunExport_CSVNoHeader(t *testing.T) {
 	}
 }
 
+func TestRunExport_UsesPOSTNotGET(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	var capturedMethod string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if capturedMethod != "POST" {
+		t.Errorf("export should use POST for tm1.Execute, got %q", capturedMethod)
+	}
+}
+
+func TestRunExport_CSVUsesPOST(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportOut = filepath.Join(t.TempDir(), "out.csv")
+
+	var capturedMethod string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if capturedMethod != "POST" {
+		t.Errorf("CSV export should use POST for tm1.Execute, got %q", capturedMethod)
+	}
+}
+
 func TestRunExport_CSVServerError(t *testing.T) {
 	resetCmdFlags(t)
 	exportView = "Default"

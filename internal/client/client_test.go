@@ -76,6 +76,52 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClientAutoAppendsApiV1(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantURL string
+	}{
+		{
+			name:    "bare host:port gets /api/v1 appended",
+			url:     "http://localhost:8010",
+			wantURL: "http://localhost:8010/api/v1",
+		},
+		{
+			name:    "bare host:port with trailing slash",
+			url:     "http://localhost:8010/",
+			wantURL: "http://localhost:8010/api/v1",
+		},
+		{
+			name:    "already has /api/v1",
+			url:     "https://server:8010/api/v1",
+			wantURL: "https://server:8010/api/v1",
+		},
+		{
+			name:    "already has /api/v1 with trailing slash",
+			url:     "https://server:8010/api/v1/",
+			wantURL: "https://server:8010/api/v1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := config.ServerConfig{
+				URL:      tt.url,
+				User:     "admin",
+				AuthMode: "basic",
+			}
+			c, err := NewClient(srv, "pass", false, false)
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			if c.baseURL != tt.wantURL {
+				t.Errorf("baseURL = %q, want %q", c.baseURL, tt.wantURL)
+			}
+		})
+	}
+}
+
 func TestGet(t *testing.T) {
 	tests := []struct {
 		name        string
