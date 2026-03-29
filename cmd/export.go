@@ -89,8 +89,8 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// CSV file output
-	if strings.HasSuffix(strings.ToLower(exportOut), ".csv") {
+	// CSV file output (extension already validated above)
+	if exportOut != "" {
 		return writeCSV(resp, exportOut, exportNoHeader)
 	}
 
