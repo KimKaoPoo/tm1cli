@@ -27,7 +27,7 @@ checksum:
   name_template: "checksums.txt"
 release:
   github:
-    owner: hsubebe89
+    owner: KimKaoPoo
     name: tm1cli
   draft: false
   prerelease: auto
