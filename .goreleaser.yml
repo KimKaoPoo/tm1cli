@@ -38,9 +38,9 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
-    homepage: "https://github.com/KimKaoPoo/tm1cli"
-    description: "CLI tool for IBM TM1/Planning Analytics REST API"
-    license: "MIT"
+    homepage: https://github.com/KimKaoPoo/tm1cli
+    description: CLI tool for IBM TM1/Planning Analytics REST API
+    license: MIT
     install: |
       bin.install "tm1cli"
     test: |
