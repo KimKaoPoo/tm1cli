@@ -319,11 +319,6 @@ func TestRunExportStubs(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "mdx flag returns v0.2.0 message",
-			args:    []string{"export", "Sales", "--mdx", "SELECT {[Measures].Members} ON COLUMNS FROM [Sales]"},
-			wantErr: "coming in v0.2.0",
-		},
-		{
 			name:    "out txt returns unsupported format error",
 			args:    []string{"export", "Sales", "--view", "Default", "--out", "report.txt"},
 			wantErr: "Unsupported file format",
@@ -1973,5 +1968,241 @@ func TestRunExport_XLSXNoHeader(t *testing.T) {
 	a1, _ := f.GetCellValue("Sheet1", "A1")
 	if a1 != "Revenue" {
 		t.Errorf("A1 = %q, want Revenue (first data row, no header)", a1)
+	}
+}
+
+// ===========================================================================
+// MDX Export Tests
+// ===========================================================================
+
+func mdxResponseJSON(id string) []byte {
+	resp := model.CellsetResponse{
+		ID: id,
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+			}},
+		},
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+func cellsCollectionJSON(cells []model.CellsetCell) []byte {
+	resp := struct {
+		Value []model.CellsetCell `json:"value"`
+	}{Value: cells}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+var testMDXCells = []model.CellsetCell{
+	{Ordinal: 0, Value: 1000.0},
+	{Ordinal: 1, Value: 2000.0},
+	{Ordinal: 2, Value: 500.0},
+	{Ordinal: 3, Value: 800.0},
+}
+
+func TestRunExport_MDXToScreen(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT {[Period].[Jan],[Period].[Feb]} ON COLUMNS, {[Measure].Members} ON ROWS FROM [Sales]"
+
+	deleteCalled := false
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-cellset-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE" && strings.Contains(r.URL.Path, "Cellsets"):
+			deleteCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	for _, want := range []string{"Jan", "Feb", "Revenue", "Cost", "1000", "2000", "500", "800"} {
+		if !strings.Contains(captured.Stdout, want) {
+			t.Errorf("output missing %q, got:\n%s", want, captured.Stdout)
+		}
+	}
+
+	if !deleteCalled {
+		t.Error("DELETE should be called to clean up cellset")
+	}
+}
+
+func TestRunExport_MDXCSVFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT ... FROM [Sales]"
+	outFile := filepath.Join(t.TempDir(), "mdx_export.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Exported 2 rows") {
+		t.Errorf("stderr should contain export summary, got: %s", captured.Stderr)
+	}
+
+	f, err := os.Open(outFile)
+	if err != nil {
+		t.Fatalf("cannot open output file: %v", err)
+	}
+	defer f.Close()
+
+	records, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatalf("cannot parse CSV: %v", err)
+	}
+
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(records))
+	}
+	if records[1][1] != "1000" {
+		t.Errorf("Revenue/Jan = %q, want 1000", records[1][1])
+	}
+}
+
+func TestRunExport_MDXServerError(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT INVALID FROM [Sales]"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": {"message": "Invalid MDX"}}`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "HTTP 400") {
+		t.Errorf("stderr should contain HTTP 400 error, got:\n%s", captured.Stderr)
+	}
+}
+
+func TestRunExport_MDXCellsetCleanupOnError(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT ... FROM [Sales]"
+
+	deleteCalled := false
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("cleanup-test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("server error"))
+		case r.Method == "DELETE" && strings.Contains(r.URL.Path, "Cellsets"):
+			deleteCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captureAll(t, func() {
+		runExport(exportCmd, []string{})
+	})
+
+	if !deleteCalled {
+		t.Error("DELETE should be called even when cell fetch fails")
+	}
+}
+
+func TestRunExport_MDXEndpointUsesPOST(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT {[Period].[Jan]} ON 0 FROM [Sales]"
+
+	var capturedMethod string
+	var capturedBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "ExecuteMDX"):
+			capturedMethod = r.Method
+			body := make([]byte, r.ContentLength)
+			r.Body.Read(body)
+			capturedBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captureAll(t, func() {
+		runExport(exportCmd, []string{})
+	})
+
+	if capturedMethod != "POST" {
+		t.Errorf("ExecuteMDX should use POST, got %q", capturedMethod)
+	}
+	if !strings.Contains(capturedBody, "MDX") {
+		t.Errorf("POST body should contain MDX key, got: %s", capturedBody)
+	}
+}
+
+func TestRunExport_ViewAndMDXBoth(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportMDX = "SELECT ... FROM [Sales]"
+
+	err := runExport(exportCmd, []string{"Sales"})
+	if err == nil {
+		t.Fatal("expected error when both --view and --mdx specified")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Errorf("error should mention 'not both', got: %s", err.Error())
+	}
+}
+
+func TestRunExport_ViewNoCube(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	err := runExport(exportCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when --view without cube")
+	}
+	if !strings.Contains(err.Error(), "Cube name is required") {
+		t.Errorf("error should mention cube requirement, got: %s", err.Error())
 	}
 }
