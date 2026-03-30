@@ -17,6 +17,8 @@ func setupTestHome(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("TM1CLI_CONFIG", "")
+	t.Chdir(tmpDir)
 
 	if cfg != nil {
 		cfgDir := filepath.Join(tmpDir, ".tm1cli")
@@ -102,6 +104,12 @@ func TestConfigList(t *testing.T) {
 		if !strings.Contains(output, "https://dev-server:8010/api/v1") {
 			t.Errorf("should show dev URL, got: %q", output)
 		}
+		if !strings.Contains(output, "Config:") {
+			t.Errorf("should show config source, got: %q", output)
+		}
+		if !strings.Contains(output, "(global)") {
+			t.Errorf("should show global source, got: %q", output)
+		}
 	})
 
 	t.Run("no connections shows help message", func(t *testing.T) {
@@ -115,6 +123,9 @@ func TestConfigList(t *testing.T) {
 
 		if !strings.Contains(output, "No connections configured") {
 			t.Errorf("should say no connections, got: %q", output)
+		}
+		if !strings.Contains(output, "Run 'tm1cli config add' first") {
+			t.Errorf("should say run config add first, got: %q", output)
 		}
 	})
 

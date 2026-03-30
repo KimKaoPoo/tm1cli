@@ -7,14 +7,27 @@ import (
 	"testing"
 )
 
-// setTestHome overrides HOME so that configDir() and ConfigPath() point to a temp directory.
+// setTestHome overrides HOME so that globalConfigDir() and globalConfigPath() point to a temp directory,
+// and changes cwd to isolate findLocalConfig() from any real project directory.
 // Returns the path to the config dir (~/.tm1cli) within that temp home.
 func setTestHome(t *testing.T) string {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("TM1CLI_CONFIG", "")
+	t.Chdir(tmpHome)
 	dir := filepath.Join(tmpHome, ".tm1cli")
 	return dir
+}
+
+// globalPathForTest returns the global config path for use in findLocalConfig tests.
+func globalPathForTest(t *testing.T) string {
+	t.Helper()
+	gp, err := globalConfigPath()
+	if err != nil {
+		t.Fatalf("globalConfigPath failed: %v", err)
+	}
+	return gp
 }
 
 // writeConfigJSON writes raw JSON content to the config file path for testing Load().
@@ -282,9 +295,9 @@ func TestSave(t *testing.T) {
 			t.Fatalf("Save failed: %v", err)
 		}
 
-		cfgPath, err := ConfigPath()
+		cfgPath, err := globalConfigPath()
 		if err != nil {
-			t.Fatalf("ConfigPath failed: %v", err)
+			t.Fatalf("globalConfigPath failed: %v", err)
 		}
 		info, err := os.Stat(cfgPath)
 		if err != nil {
@@ -622,6 +635,304 @@ func TestGetEffectiveServer(t *testing.T) {
 		result := cfg.GetEffectiveServer()
 		if result != "" {
 			t.Errorf("got %q, want empty string", result)
+		}
+	})
+}
+
+func TestFindLocalConfig(t *testing.T) {
+	t.Run("finds config in current directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome")) // avoid global path collision
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		os.MkdirAll(cfgDir, 0700)
+		os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{}`), 0600)
+
+		result := findLocalConfig(globalPathForTest(t))
+		expected := filepath.Join(tmpDir, ".tm1cli", "config.json")
+		if result != expected {
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want %q", result, expected)
+		}
+	})
+
+	t.Run("walks parent directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Setenv("TM1CLI_CONFIG", "")
+
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		os.MkdirAll(cfgDir, 0700)
+		os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{}`), 0600)
+
+		childDir := filepath.Join(tmpDir, "sub", "deep")
+		os.MkdirAll(childDir, 0755)
+		t.Chdir(childDir)
+
+		result := findLocalConfig(globalPathForTest(t))
+		expected := filepath.Join(tmpDir, ".tm1cli", "config.json")
+		if result != expected {
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want %q", result, expected)
+		}
+	})
+
+	t.Run("returns empty when no local config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		result := findLocalConfig(globalPathForTest(t))
+		if result != "" {
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want empty string", result)
+		}
+	})
+
+	t.Run("does not return global config as local", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+		t.Setenv("TM1CLI_CONFIG", "")
+
+		// Create global config
+		globalDir := filepath.Join(tmpHome, ".tm1cli")
+		os.MkdirAll(globalDir, 0700)
+		os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{}`), 0600)
+
+		// cd into home — global config exists but should NOT be found as "local"
+		t.Chdir(tmpHome)
+
+		result := findLocalConfig(globalPathForTest(t))
+		if result != "" {
+			t.Errorf("findLocalConfig(globalPathForTest(t)) should not return global config, got %q", result)
+		}
+	})
+}
+
+func TestLoadPrecedence(t *testing.T) {
+	t.Run("TM1CLI_CONFIG env var overrides all", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+		t.Chdir(tmpHome)
+
+		// Create global config
+		globalDir := filepath.Join(tmpHome, ".tm1cli")
+		os.MkdirAll(globalDir, 0700)
+		writeConfigJSON(t, globalDir, `{"default":"global-srv","servers":{"global-srv":{"url":"https://global:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`)
+
+		// Create env config at custom path
+		envDir := filepath.Join(t.TempDir(), "custom")
+		os.MkdirAll(envDir, 0700)
+		envPath := filepath.Join(envDir, "config.json")
+		os.WriteFile(envPath, []byte(`{"default":"env-srv","servers":{"env-srv":{"url":"https://env:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`), 0600)
+		t.Setenv("TM1CLI_CONFIG", envPath)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if cfg.Default != "env-srv" {
+			t.Errorf("Default = %q, want %q", cfg.Default, "env-srv")
+		}
+		if cfg.ConfigSource() != SourceEnv {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceEnv)
+		}
+	})
+
+	t.Run("local config preferred over global", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+		t.Setenv("TM1CLI_CONFIG", "")
+
+		// Create global config
+		globalDir := filepath.Join(tmpHome, ".tm1cli")
+		os.MkdirAll(globalDir, 0700)
+		writeConfigJSON(t, globalDir, `{"default":"global-srv","servers":{"global-srv":{"url":"https://global:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`)
+
+		// Create local config in a project dir
+		projectDir := filepath.Join(t.TempDir(), "myproject")
+		os.MkdirAll(projectDir, 0755)
+		localDir := filepath.Join(projectDir, ".tm1cli")
+		os.MkdirAll(localDir, 0700)
+		os.WriteFile(filepath.Join(localDir, "config.json"), []byte(`{"default":"local-srv","servers":{"local-srv":{"url":"https://local:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`), 0600)
+
+		t.Chdir(projectDir)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if cfg.Default != "local-srv" {
+			t.Errorf("Default = %q, want %q", cfg.Default, "local-srv")
+		}
+		if cfg.ConfigSource() != SourceLocal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceLocal)
+		}
+	})
+
+	t.Run("falls back to global when no local config", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+		t.Setenv("TM1CLI_CONFIG", "")
+
+		// Create global config
+		globalDir := filepath.Join(tmpHome, ".tm1cli")
+		os.MkdirAll(globalDir, 0700)
+		writeConfigJSON(t, globalDir, `{"default":"global-srv","servers":{"global-srv":{"url":"https://global:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`)
+
+		// cd into empty dir (no local config)
+		emptyDir := t.TempDir()
+		t.Chdir(emptyDir)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if cfg.Default != "global-srv" {
+			t.Errorf("Default = %q, want %q", cfg.Default, "global-srv")
+		}
+		if cfg.ConfigSource() != SourceGlobal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceGlobal)
+		}
+	})
+}
+
+func TestSavePrecedence(t *testing.T) {
+	t.Run("writes to loadedFrom path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		// Create local config
+		localDir := filepath.Join(tmpDir, ".tm1cli")
+		os.MkdirAll(localDir, 0700)
+		os.WriteFile(filepath.Join(localDir, "config.json"), []byte(`{"default":"old","servers":{"old":{"url":"https://old:8010/api/v1","user":"admin","password":"","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`), 0600)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		cfg.Default = "updated"
+		if err := Save(cfg); err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+
+		// Verify saved to local path
+		data, err := os.ReadFile(filepath.Join(localDir, "config.json"))
+		if err != nil {
+			t.Fatalf("cannot read saved config: %v", err)
+		}
+		var saved Config
+		json.Unmarshal(data, &saved)
+		if saved.Default != "updated" {
+			t.Errorf("Default = %q, want %q", saved.Default, "updated")
+		}
+	})
+
+	t.Run("new config resolves path via TM1CLI_CONFIG", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Chdir(tmpDir)
+
+		envPath := filepath.Join(tmpDir, "custom", "config.json")
+		t.Setenv("TM1CLI_CONFIG", envPath)
+
+		cfg := NewConfig()
+		cfg.AddServer("test", ServerConfig{URL: "https://test:8010/api/v1", User: "admin", AuthMode: "basic"})
+
+		if err := Save(cfg); err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+
+		// Verify file was created at env path
+		if _, err := os.Stat(envPath); os.IsNotExist(err) {
+			t.Fatalf("config was not saved to TM1CLI_CONFIG path %q", envPath)
+		}
+
+		// Verify loadedFrom was set
+		if cfg.LoadedFrom() != envPath {
+			t.Errorf("LoadedFrom() = %q, want %q", cfg.LoadedFrom(), envPath)
+		}
+	})
+
+	t.Run("creates parent directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Chdir(tmpDir)
+
+		envPath := filepath.Join(tmpDir, "deep", "nested", ".tm1cli", "config.json")
+		t.Setenv("TM1CLI_CONFIG", envPath)
+
+		cfg := NewConfig()
+		if err := Save(cfg); err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+
+		if _, err := os.Stat(envPath); os.IsNotExist(err) {
+			t.Fatal("config file should have been created with parent dirs")
+		}
+	})
+}
+
+func TestConfigSource(t *testing.T) {
+	t.Run("returns env when TM1CLI_CONFIG is set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Chdir(tmpDir)
+
+		envPath := filepath.Join(tmpDir, "env-config.json")
+		os.WriteFile(envPath, []byte(`{"default":"","servers":{},"settings":{"default_limit":50,"output_format":"table"}}`), 0600)
+		t.Setenv("TM1CLI_CONFIG", envPath)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.ConfigSource() != SourceEnv {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceEnv)
+		}
+	})
+
+	t.Run("returns local for project config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		localDir := filepath.Join(tmpDir, ".tm1cli")
+		os.MkdirAll(localDir, 0700)
+		os.WriteFile(filepath.Join(localDir, "config.json"), []byte(`{"default":"","servers":{},"settings":{"default_limit":50,"output_format":"table"}}`), 0600)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.ConfigSource() != SourceLocal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceLocal)
+		}
+	})
+
+	t.Run("returns global when only global exists", func(t *testing.T) {
+		dir := setTestHome(t)
+		writeConfigJSON(t, dir, `{"default":"","servers":{},"settings":{"default_limit":50,"output_format":"table"}}`)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.ConfigSource() != SourceGlobal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceGlobal)
 		}
 	})
 }
