@@ -185,6 +185,15 @@ func zeroAllFlags() {
 	exportMDX = ""
 	exportOut = ""
 	exportNoHeader = false
+	viewsFilter = ""
+	viewsLimit = 0
+	viewsAll = false
+	viewsCount = false
+	subsetsFilter = ""
+	subsetsLimit = 0
+	subsetsAll = false
+	subsetsCount = false
+	subsetsHierarchy = ""
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -233,6 +242,36 @@ func elementsJSON(names []string, types []string) []byte {
 			typ = types[i]
 		}
 		resp.Value = append(resp.Value, elem{Name: name, Type: typ})
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// viewsJSON returns JSON for a TM1 Views response.
+func viewsJSON(names ...string) []byte {
+	type view struct {
+		Name string `json:"Name"`
+	}
+	resp := struct {
+		Value []view `json:"value"`
+	}{}
+	for _, name := range names {
+		resp.Value = append(resp.Value, view{Name: name})
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// subsetsJSON returns JSON for a TM1 Subsets response.
+func subsetsJSON(names ...string) []byte {
+	type subset struct {
+		Name string `json:"Name"`
+	}
+	resp := struct {
+		Value []subset `json:"value"`
+	}{}
+	for _, name := range names {
+		resp.Value = append(resp.Value, subset{Name: name})
 	}
 	data, _ := json.Marshal(resp)
 	return data
