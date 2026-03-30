@@ -130,6 +130,8 @@ func writeTestConfig(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("TM1CLI_CONFIG", "")
+	t.Chdir(tmpDir)
 
 	cfgDir := filepath.Join(tmpDir, ".tm1cli")
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {

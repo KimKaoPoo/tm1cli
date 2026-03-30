@@ -770,6 +770,8 @@ func TestRunCubes_NoConfig(t *testing.T) {
 	// Set HOME to empty temp dir — no config file
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("TM1CLI_CONFIG", "")
+	t.Chdir(tmpDir)
 
 	captured := captureAll(t, func() {
 		err := runCubes(cubesCmd, nil)
