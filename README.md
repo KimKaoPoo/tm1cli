@@ -21,7 +21,20 @@ Manage TM1 servers, list cubes and dimensions, run TI processes, and export data
 
 ## Install
 
-### Download binary (recommended)
+### Homebrew (macOS / Linux)
+
+```bash
+brew install KimKaoPoo/tap/tm1cli
+```
+
+Or:
+
+```bash
+brew tap KimKaoPoo/tap
+brew install tm1cli
+```
+
+### Download binary
 
 Download the latest release for your platform from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest).
 
