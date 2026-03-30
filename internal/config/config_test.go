@@ -20,6 +20,16 @@ func setTestHome(t *testing.T) string {
 	return dir
 }
 
+// globalPathForTest returns the global config path for use in findLocalConfig tests.
+func globalPathForTest(t *testing.T) string {
+	t.Helper()
+	gp, err := globalConfigPath()
+	if err != nil {
+		t.Fatalf("globalConfigPath failed: %v", err)
+	}
+	return gp
+}
+
 // writeConfigJSON writes raw JSON content to the config file path for testing Load().
 func writeConfigJSON(t *testing.T, dir string, content string) {
 	t.Helper()
@@ -640,10 +650,10 @@ func TestFindLocalConfig(t *testing.T) {
 		os.MkdirAll(cfgDir, 0700)
 		os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{}`), 0600)
 
-		result := findLocalConfig()
+		result := findLocalConfig(globalPathForTest(t))
 		expected := filepath.Join(tmpDir, ".tm1cli", "config.json")
 		if result != expected {
-			t.Errorf("findLocalConfig() = %q, want %q", result, expected)
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want %q", result, expected)
 		}
 	})
 
@@ -660,10 +670,10 @@ func TestFindLocalConfig(t *testing.T) {
 		os.MkdirAll(childDir, 0755)
 		t.Chdir(childDir)
 
-		result := findLocalConfig()
+		result := findLocalConfig(globalPathForTest(t))
 		expected := filepath.Join(tmpDir, ".tm1cli", "config.json")
 		if result != expected {
-			t.Errorf("findLocalConfig() = %q, want %q", result, expected)
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want %q", result, expected)
 		}
 	})
 
@@ -673,9 +683,9 @@ func TestFindLocalConfig(t *testing.T) {
 		t.Setenv("TM1CLI_CONFIG", "")
 		t.Chdir(tmpDir)
 
-		result := findLocalConfig()
+		result := findLocalConfig(globalPathForTest(t))
 		if result != "" {
-			t.Errorf("findLocalConfig() = %q, want empty string", result)
+			t.Errorf("findLocalConfig(globalPathForTest(t)) = %q, want empty string", result)
 		}
 	})
 
@@ -692,9 +702,9 @@ func TestFindLocalConfig(t *testing.T) {
 		// cd into home — global config exists but should NOT be found as "local"
 		t.Chdir(tmpHome)
 
-		result := findLocalConfig()
+		result := findLocalConfig(globalPathForTest(t))
 		if result != "" {
-			t.Errorf("findLocalConfig() should not return global config, got %q", result)
+			t.Errorf("findLocalConfig(globalPathForTest(t)) should not return global config, got %q", result)
 		}
 	})
 }
@@ -727,8 +737,8 @@ func TestLoadPrecedence(t *testing.T) {
 		if cfg.Default != "env-srv" {
 			t.Errorf("Default = %q, want %q", cfg.Default, "env-srv")
 		}
-		if cfg.ConfigSource() != "env" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "env")
+		if cfg.ConfigSource() != SourceEnv {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceEnv)
 		}
 	})
 
@@ -761,8 +771,8 @@ func TestLoadPrecedence(t *testing.T) {
 		if cfg.Default != "local-srv" {
 			t.Errorf("Default = %q, want %q", cfg.Default, "local-srv")
 		}
-		if cfg.ConfigSource() != "local" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "local")
+		if cfg.ConfigSource() != SourceLocal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceLocal)
 		}
 	})
 
@@ -790,8 +800,8 @@ func TestLoadPrecedence(t *testing.T) {
 		if cfg.Default != "global-srv" {
 			t.Errorf("Default = %q, want %q", cfg.Default, "global-srv")
 		}
-		if cfg.ConfigSource() != "global" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "global")
+		if cfg.ConfigSource() != SourceGlobal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceGlobal)
 		}
 	})
 }
@@ -889,8 +899,8 @@ func TestConfigSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.ConfigSource() != "env" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "env")
+		if cfg.ConfigSource() != SourceEnv {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceEnv)
 		}
 	})
 
@@ -908,8 +918,8 @@ func TestConfigSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.ConfigSource() != "local" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "local")
+		if cfg.ConfigSource() != SourceLocal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceLocal)
 		}
 	})
 
@@ -921,8 +931,8 @@ func TestConfigSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.ConfigSource() != "global" {
-			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), "global")
+		if cfg.ConfigSource() != SourceGlobal {
+			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceGlobal)
 		}
 	})
 }

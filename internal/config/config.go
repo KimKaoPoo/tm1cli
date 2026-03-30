@@ -13,6 +13,10 @@ const (
 	DefaultOutput     = "table"
 	DefaultShowSystem = false
 	DefaultTLSVerify  = false
+
+	SourceEnv    = "env"
+	SourceLocal  = "local"
+	SourceGlobal = "global"
 )
 
 type ServerConfig struct {
@@ -40,6 +44,7 @@ type Config struct {
 
 func (c *Config) ConfigSource() string { return c.source }
 func (c *Config) LoadedFrom() string   { return c.loadedFrom }
+func (c *Config) IsLocalConfig() bool  { return c.source == SourceLocal }
 
 func DefaultSettings() Settings {
 	return Settings{
@@ -70,26 +75,25 @@ func globalConfigPath() (string, error) {
 // 1. TM1CLI_CONFIG env var  2. Local .tm1cli/config.json (walk upward)  3. Global ~/.tm1cli/config.json
 func resolveConfigPath() (path string, source string, err error) {
 	if envPath := os.Getenv("TM1CLI_CONFIG"); envPath != "" {
-		return envPath, "env", nil
-	}
-	if local := findLocalConfig(); local != "" {
-		return local, "local", nil
+		return envPath, SourceEnv, nil
 	}
 	gp, err := globalConfigPath()
 	if err != nil {
 		return "", "", err
 	}
-	return gp, "global", nil
+	if local := findLocalConfig(gp); local != "" {
+		return local, SourceLocal, nil
+	}
+	return gp, SourceGlobal, nil
 }
 
 // findLocalConfig walks from cwd upward looking for .tm1cli/config.json.
-// It explicitly excludes the global config path to avoid misclassifying it.
-func findLocalConfig() string {
+// It explicitly excludes globalPath to avoid misclassifying the global config as local.
+func findLocalConfig(globalPath string) string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	globalPath, _ := globalConfigPath()
 	for {
 		candidate := filepath.Join(dir, ".tm1cli", "config.json")
 		if candidate != globalPath {

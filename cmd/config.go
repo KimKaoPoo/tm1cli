@@ -177,7 +177,7 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Connection '%s' added.\n", name)
 	}
-	if cfg.ConfigSource() == "local" {
+	if cfg.IsLocalConfig() {
 		fmt.Println("Warning: Local config created. Add '.tm1cli/' to your .gitignore to avoid committing credentials.")
 	}
 	fmt.Println("Note: Password is stored base64-encoded (not encrypted).")
