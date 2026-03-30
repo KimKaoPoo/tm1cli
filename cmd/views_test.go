@@ -23,36 +23,43 @@ func TestFilterViewsByName(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		input     []model.View
 		filter    string
 		wantNames []string
 	}{
 		{
 			name:      "case-insensitive partial match",
+			input:     views,
 			filter:    "actual",
 			wantNames: []string{"Actual", "ActualVsBudget", "ACTUAL_PLAN"},
 		},
 		{
 			name:      "uppercase filter matches lowercase names",
+			input:     views,
 			filter:    "BUDGET",
 			wantNames: []string{"Budget", "ActualVsBudget"},
 		},
 		{
 			name:      "mixed case filter",
+			input:     views,
 			filter:    "AcTuAl",
 			wantNames: []string{"Actual", "ActualVsBudget", "ACTUAL_PLAN"},
 		},
 		{
 			name:      "no match returns empty",
+			input:     views,
 			filter:    "nonexistent",
 			wantNames: nil,
 		},
 		{
 			name:      "empty filter matches all",
+			input:     views,
 			filter:    "",
 			wantNames: []string{"Actual", "Budget", "ActualVsBudget", "ACTUAL_PLAN", "Forecast"},
 		},
 		{
-			name:      "empty input returns nil",
+			name:      "nil input returns nil",
+			input:     nil,
 			filter:    "actual",
 			wantNames: nil,
 		},
@@ -60,11 +67,7 @@ func TestFilterViewsByName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input := views
-			if tt.name == "empty input returns nil" {
-				input = nil
-			}
-			result := filterViewsByName(input, tt.filter)
+			result := filterViewsByName(tt.input, tt.filter)
 
 			gotNames := viewNames(result)
 			if !stringSliceEqual(gotNames, tt.wantNames) {

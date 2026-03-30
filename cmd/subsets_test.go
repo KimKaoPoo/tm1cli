@@ -23,36 +23,43 @@ func TestFilterSubsetsByName(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		input     []model.Subset
 		filter    string
 		wantNames []string
 	}{
 		{
 			name:      "case-insensitive partial match",
+			input:     subsets,
 			filter:    "region",
 			wantNames: []string{"AllRegions", "EastRegion", "WestRegion", "NORTH_REGION"},
 		},
 		{
 			name:      "uppercase filter matches lowercase names",
+			input:     subsets,
 			filter:    "EAST",
 			wantNames: []string{"EastRegion"},
 		},
 		{
 			name:      "mixed case filter",
+			input:     subsets,
 			filter:    "wEsT",
 			wantNames: []string{"WestRegion"},
 		},
 		{
 			name:      "no match returns empty",
+			input:     subsets,
 			filter:    "nonexistent",
 			wantNames: nil,
 		},
 		{
 			name:      "empty filter matches all",
+			input:     subsets,
 			filter:    "",
 			wantNames: []string{"AllRegions", "EastRegion", "WestRegion", "NORTH_REGION", "SouthAmerica"},
 		},
 		{
-			name:      "empty input returns nil",
+			name:      "nil input returns nil",
+			input:     nil,
 			filter:    "region",
 			wantNames: nil,
 		},
@@ -60,11 +67,7 @@ func TestFilterSubsetsByName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input := subsets
-			if tt.name == "empty input returns nil" {
-				input = nil
-			}
-			result := filterSubsetsByName(input, tt.filter)
+			result := filterSubsetsByName(tt.input, tt.filter)
 
 			gotNames := subsetNames(result)
 			if !stringSliceEqual(gotNames, tt.wantNames) {
