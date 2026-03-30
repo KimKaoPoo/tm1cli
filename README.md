@@ -21,14 +21,27 @@ Manage TM1 servers, list cubes and dimensions, run TI processes, and export data
 
 ## Install
 
-### Download binary (recommended)
+### Homebrew (macOS / Linux)
+
+```bash
+brew install KimKaoPoo/tap/tm1cli
+```
+
+Or:
+
+```bash
+brew tap KimKaoPoo/tap
+brew install tm1cli
+```
+
+### Download binary
 
 Download the latest release for your platform from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest).
 
 **macOS (Apple Silicon):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_arm64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_darwin_arm64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -36,7 +49,7 @@ sudo mv tm1cli /usr/local/bin/
 **macOS (Intel):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_amd64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_darwin_amd64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -44,7 +57,7 @@ sudo mv tm1cli /usr/local/bin/
 **Linux (x86_64):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_amd64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_linux_amd64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -52,14 +65,14 @@ sudo mv tm1cli /usr/local/bin/
 **Linux (ARM64):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_arm64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_linux_arm64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
 
 **Windows:**
 
-Download `tm1cli_0.1.0_windows_amd64.zip` from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest), extract, and add `tm1cli.exe` to your PATH.
+Download `tm1cli_0.1.2_windows_amd64.zip` from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest), extract, and add `tm1cli.exe` to your PATH.
 
 ### Go install
 

@@ -31,3 +31,18 @@ release:
     name: tm1cli
   draft: false
   prerelease: auto
+brews:
+  - name: tm1cli
+    repository:
+      owner: KimKaoPoo
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    skip_upload: auto
+    homepage: https://github.com/KimKaoPoo/tm1cli
+    description: CLI tool for IBM TM1/Planning Analytics REST API
+    license: MIT
+    install: |
+      bin.install "tm1cli"
+    test: |
+      system "#{bin}/tm1cli", "version"
