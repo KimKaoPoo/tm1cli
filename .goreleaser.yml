@@ -38,6 +38,7 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
+    skip_upload: auto
     homepage: https://github.com/KimKaoPoo/tm1cli
     description: CLI tool for IBM TM1/Planning Analytics REST API
     license: MIT
