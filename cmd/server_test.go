@@ -9,25 +9,6 @@ import (
 	"tm1cli/internal/model"
 )
 
-// --- Test helpers ---
-
-// activeUserJSON returns JSON for a TM1 ActiveUser response.
-func activeUserJSON(name string) []byte {
-	data, _ := json.Marshal(model.ActiveUser{Name: name})
-	return data
-}
-
-// serverConfigJSON returns JSON for a TM1 Configuration response.
-func serverConfigJSON(name, version, host string, port int) []byte {
-	data, _ := json.Marshal(model.ServerConfiguration{
-		ServerName:     name,
-		ProductVersion: version,
-		AdminHost:      host,
-		HTTPPortNumber: port,
-	})
-	return data
-}
-
 // ============================================================
 // whoami integration tests — runWhoami with httptest.NewServer
 // ============================================================

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 	"tm1cli/internal/config"
+	"tm1cli/internal/model"
 )
 
 // capturedOutput holds captured stdout and stderr.
@@ -249,5 +250,22 @@ func processesJSON(procs ...string) []byte {
 		resp.Value = append(resp.Value, proc{Name: name})
 	}
 	data, _ := json.Marshal(resp)
+	return data
+}
+
+// activeUserJSON returns JSON for a TM1 ActiveUser response.
+func activeUserJSON(name string) []byte {
+	data, _ := json.Marshal(model.ActiveUser{Name: name})
+	return data
+}
+
+// serverConfigJSON returns JSON for a TM1 Configuration response.
+func serverConfigJSON(name, version, host string, port int) []byte {
+	data, _ := json.Marshal(model.ServerConfiguration{
+		ServerName:     name,
+		ProductVersion: version,
+		AdminHost:      host,
+		HTTPPortNumber: port,
+	})
 	return data
 }
