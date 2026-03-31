@@ -31,6 +31,7 @@ Connect to TM1 servers and perform common operations from the terminal.
 Equivalent to using TM1 Architect, PAW, or the REST API browser.
 
 Environment Variables:
+  TM1CLI_CONFIG     Override config file path
   TM1CLI_SERVER     Override active connection
   TM1CLI_OUTPUT     Override output format
   TM1CLI_PASSWORD   Override stored password`,

@@ -15,20 +15,33 @@ Manage TM1 servers, list cubes and dimensions, run TI processes, and export data
 - **Multi-server config** — save and switch between TM1 server connections
 - **Cubes & Dimensions** — list, filter, and browse cube structures and dimension members
 - **TI Processes** — list and execute TurboIntegrator processes with parameters
-- **Data Export** — export cube views to screen, CSV, or JSON
+- **Data Export** — export cube views to screen, CSV, JSON, or XLSX
 - **Flexible output** — table or JSON format, with filtering and pagination
 - **Secure** — no hardcoded credentials; supports environment variable overrides
 
 ## Install
 
-### Download binary (recommended)
+### Homebrew (macOS / Linux)
+
+```bash
+brew install KimKaoPoo/tap/tm1cli
+```
+
+Or:
+
+```bash
+brew tap KimKaoPoo/tap
+brew install tm1cli
+```
+
+### Download binary
 
 Download the latest release for your platform from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest).
 
 **macOS (Apple Silicon):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_arm64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_darwin_arm64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -36,7 +49,7 @@ sudo mv tm1cli /usr/local/bin/
 **macOS (Intel):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_darwin_amd64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_darwin_amd64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -44,7 +57,7 @@ sudo mv tm1cli /usr/local/bin/
 **Linux (x86_64):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_amd64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_linux_amd64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
@@ -52,14 +65,14 @@ sudo mv tm1cli /usr/local/bin/
 **Linux (ARM64):**
 
 ```bash
-curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.0_linux_arm64.tar.gz
+curl -Lo tm1cli.tar.gz https://github.com/KimKaoPoo/tm1cli/releases/latest/download/tm1cli_0.1.2_linux_arm64.tar.gz
 tar xzf tm1cli.tar.gz
 sudo mv tm1cli /usr/local/bin/
 ```
 
 **Windows:**
 
-Download `tm1cli_0.1.0_windows_amd64.zip` from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest), extract, and add `tm1cli.exe` to your PATH.
+Download `tm1cli_0.1.2_windows_amd64.zip` from [Releases](https://github.com/KimKaoPoo/tm1cli/releases/latest), extract, and add `tm1cli.exe` to your PATH.
 
 ### Go install
 
@@ -164,9 +177,12 @@ tm1cli process run "LoadData" --param pSource=file.csv --param pYear=2024
 ### Export
 
 ```bash
-tm1cli export "Sales" --view "Default"              # print table to screen
-tm1cli export "Sales" --view "Default" -o data.csv  # write CSV file
-tm1cli export "Sales" --view "Default" --output json # JSON to screen
+tm1cli export "Sales" --view "Default"               # print table to screen
+tm1cli export "Sales" --view "Default" -o data.csv   # write CSV file
+tm1cli export "Sales" --view "Default" -o data.json  # write JSON file
+tm1cli export "Sales" --view "Default" -o report.xlsx # write Excel file
+tm1cli export "Sales" --view "Default" --output json  # JSON to screen
+tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without header
 ```
 
 ### Global Flags
@@ -188,7 +204,7 @@ tm1cli export "Sales" --view "Default" --output json # JSON to screen
 ## Roadmap
 
 - [x] v0.1.0 — Config, cubes, dims, members, process list/run, export view → table
-- [ ] v0.1.1 — Export view → CSV/JSON file
+- [x] v0.1.1 — Export view → CSV/JSON file
 - [ ] v0.2.0 — MDX export, XLSX output, config edit, CAM auth testing
 - [ ] v0.3.0 — OS keychain, tab completion, advanced features
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 	"tm1cli/internal/config"
+	"tm1cli/internal/model"
 )
 
 // capturedOutput holds captured stdout and stderr.
@@ -130,6 +131,8 @@ func writeTestConfig(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("TM1CLI_CONFIG", "")
+	t.Chdir(tmpDir)
 
 	cfgDir := filepath.Join(tmpDir, ".tm1cli")
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {
@@ -183,6 +186,16 @@ func zeroAllFlags() {
 	exportView = ""
 	exportMDX = ""
 	exportOut = ""
+	exportNoHeader = false
+	viewsFilter = ""
+	viewsLimit = 0
+	viewsAll = false
+	viewsCount = false
+	subsetsFilter = ""
+	subsetsLimit = 0
+	subsetsAll = false
+	subsetsCount = false
+	subsetsHierarchy = ""
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -236,6 +249,36 @@ func elementsJSON(names []string, types []string) []byte {
 	return data
 }
 
+// viewsJSON returns JSON for a TM1 Views response.
+func viewsJSON(names ...string) []byte {
+	type view struct {
+		Name string `json:"Name"`
+	}
+	resp := struct {
+		Value []view `json:"value"`
+	}{}
+	for _, name := range names {
+		resp.Value = append(resp.Value, view{Name: name})
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// subsetsJSON returns JSON for a TM1 Subsets response.
+func subsetsJSON(names ...string) []byte {
+	type subset struct {
+		Name string `json:"Name"`
+	}
+	resp := struct {
+		Value []subset `json:"value"`
+	}{}
+	for _, name := range names {
+		resp.Value = append(resp.Value, subset{Name: name})
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
 // processesJSON returns JSON for a TM1 Processes response.
 func processesJSON(procs ...string) []byte {
 	type proc struct {
@@ -248,5 +291,22 @@ func processesJSON(procs ...string) []byte {
 		resp.Value = append(resp.Value, proc{Name: name})
 	}
 	data, _ := json.Marshal(resp)
+	return data
+}
+
+// activeUserJSON returns JSON for a TM1 ActiveUser response.
+func activeUserJSON(name string) []byte {
+	data, _ := json.Marshal(model.ActiveUser{Name: name})
+	return data
+}
+
+// serverConfigJSON returns JSON for a TM1 Configuration response.
+func serverConfigJSON(name, version, host string, port int) []byte {
+	data, _ := json.Marshal(model.ServerConfiguration{
+		ServerName:     name,
+		ProductVersion: version,
+		AdminHost:      host,
+		HTTPPortNumber: port,
+	})
 	return data
 }

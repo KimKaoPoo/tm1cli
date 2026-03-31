@@ -11,6 +11,8 @@ import (
 	"testing"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
+
+	"github.com/xuri/excelize/v2"
 )
 
 // ---------------------------------------------------------------------------
@@ -316,16 +318,6 @@ func TestRunExportStubs(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{
-			name:    "mdx flag returns v0.2.0 message",
-			args:    []string{"export", "Sales", "--mdx", "SELECT {[Measures].Members} ON COLUMNS FROM [Sales]"},
-			wantErr: "coming in v0.2.0",
-		},
-		{
-			name:    "out xlsx returns v0.2.0 message",
-			args:    []string{"export", "Sales", "--view", "Default", "--out", "report.xlsx"},
-			wantErr: "coming in v0.2.0",
-		},
 		{
 			name:    "out txt returns unsupported format error",
 			args:    []string{"export", "Sales", "--view", "Default", "--out", "report.txt"},
@@ -1495,6 +1487,28 @@ func TestRunExport_CSVUsesPOST(t *testing.T) {
 	}
 }
 
+func TestRunExport_CSVInvalidPath(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportOut = "/nonexistent/dir/report.csv"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Cannot create file") {
+		t.Errorf("stderr should contain 'Cannot create file', got:\n%s", captured.Stderr)
+	}
+}
+
 func TestRunExport_CSVServerError(t *testing.T) {
 	resetCmdFlags(t)
 	exportView = "Default"
@@ -1521,5 +1535,674 @@ func TestRunExport_CSVServerError(t *testing.T) {
 	// File should not be created
 	if _, err := os.Stat(outFile); err == nil {
 		t.Error("CSV file should not be created on server error")
+	}
+}
+
+// ===========================================================================
+// TestWriteXLSX — unit tests for the writeXLSX function
+// ===========================================================================
+
+func TestWriteXLSX(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 1000.0},
+			{Ordinal: 1, Value: 2000.0},
+			{Ordinal: 2, Value: 500.0},
+			{Ordinal: 3, Value: 800.0},
+		},
+	}
+
+	t.Run("writes XLSX with headers and correct values", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "out.xlsx")
+
+		captured := captureAll(t, func() {
+			err := writeXLSX(resp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		if !strings.Contains(captured.Stderr, "Exported 2 rows") {
+			t.Errorf("stderr should contain export summary, got: %s", captured.Stderr)
+		}
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// Row 1: headers
+		h1, _ := f.GetCellValue("Sheet1", "A1")
+		h2, _ := f.GetCellValue("Sheet1", "B1")
+		h3, _ := f.GetCellValue("Sheet1", "C1")
+		if h1 != "DIM1" || h2 != "Jan" || h3 != "Feb" {
+			t.Errorf("headers = [%s, %s, %s], want [DIM1, Jan, Feb]", h1, h2, h3)
+		}
+
+		// Row 2: Revenue 1000 2000
+		a2, _ := f.GetCellValue("Sheet1", "A2")
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		c2, _ := f.GetCellValue("Sheet1", "C2")
+		if a2 != "Revenue" {
+			t.Errorf("A2 = %q, want Revenue", a2)
+		}
+		if b2 != "1000" {
+			t.Errorf("B2 = %q, want 1000", b2)
+		}
+		if c2 != "2000" {
+			t.Errorf("C2 = %q, want 2000", c2)
+		}
+
+		// Row 3: Cost 500 800
+		a3, _ := f.GetCellValue("Sheet1", "A3")
+		b3, _ := f.GetCellValue("Sheet1", "B3")
+		c3, _ := f.GetCellValue("Sheet1", "C3")
+		if a3 != "Cost" || b3 != "500" || c3 != "800" {
+			t.Errorf("row 3 = [%s, %s, %s], want [Cost, 500, 800]", a3, b3, c3)
+		}
+	})
+
+	t.Run("numeric values are stored as numbers not strings", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "num.xlsx")
+
+		captureAll(t, func() {
+			err := writeXLSX(resp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// B2 should contain "1000" not "1000.000000" or similar string formatting
+		val, _ := f.GetCellValue("Sheet1", "B2")
+		if val != "1000" {
+			t.Errorf("B2 = %q, want 1000", val)
+		}
+		// A2 (member name) should be a string
+		a2, _ := f.GetCellValue("Sheet1", "A2")
+		if a2 != "Revenue" {
+			t.Errorf("A2 = %q, want Revenue", a2)
+		}
+	})
+
+	t.Run("writes XLSX without headers when noHeader is true", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "nohead.xlsx")
+
+		captureAll(t, func() {
+			err := writeXLSX(resp, outFile, true)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// Row 1 should be data, not headers
+		a1, _ := f.GetCellValue("Sheet1", "A1")
+		if a1 != "Revenue" {
+			t.Errorf("A1 = %q, want Revenue (first data row)", a1)
+		}
+
+		// Row 3 should be empty (only 2 data rows)
+		a3, _ := f.GetCellValue("Sheet1", "A3")
+		if a3 != "" {
+			t.Errorf("A3 should be empty, got %q", a3)
+		}
+	})
+
+	t.Run("empty cellset prints message and creates no file", func(t *testing.T) {
+		outFile := filepath.Join(t.TempDir(), "empty.xlsx")
+		emptyResp := model.CellsetResponse{
+			Axes:  []model.CellsetAxis{{Ordinal: 0}},
+			Cells: nil,
+		}
+
+		captured := captureAll(t, func() {
+			err := writeXLSX(emptyResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		if !strings.Contains(captured.Stderr, "No data to export") {
+			t.Errorf("stderr should contain 'No data to export', got: %s", captured.Stderr)
+		}
+
+		if _, err := os.Stat(outFile); err == nil {
+			t.Error("file should not be created for empty cellset")
+		}
+	})
+
+	t.Run("returns error for invalid path", func(t *testing.T) {
+		badPath := filepath.Join(t.TempDir(), "nonexistent", "subdir", "out.xlsx")
+
+		captureAll(t, func() {
+			err := writeXLSX(resp, badPath, false)
+			if err == nil {
+				t.Fatal("expected error for invalid path, got nil")
+			}
+			if !strings.Contains(err.Error(), "Cannot write file") {
+				t.Errorf("error should mention file creation, got: %s", err.Error())
+			}
+		})
+	})
+
+	t.Run("string cell values preserved without numeric conversion", func(t *testing.T) {
+		strResp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Comment"}}},
+				}},
+				{Ordinal: 1, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Item1"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 0, Value: "00123"},
+			},
+		}
+
+		outFile := filepath.Join(t.TempDir(), "strval.xlsx")
+		captureAll(t, func() {
+			err := writeXLSX(strResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// String cell value "00123" must be preserved as-is, not converted to 123
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		if b2 != "00123" {
+			t.Errorf("B2 = %q, want 00123 (string value preserved)", b2)
+		}
+	})
+
+	t.Run("numeric-looking member names preserved as text", func(t *testing.T) {
+		numResp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				}},
+				{Ordinal: 1, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "00123"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "2024"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 0, Value: 100.0},
+				{Ordinal: 1, Value: 200.0},
+			},
+		}
+
+		outFile := filepath.Join(t.TempDir(), "members.xlsx")
+		captureAll(t, func() {
+			err := writeXLSX(numResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// Member "00123" must keep leading zeros (text, not number)
+		a2, _ := f.GetCellValue("Sheet1", "A2")
+		if a2 != "00123" {
+			t.Errorf("A2 = %q, want 00123 (leading zeros preserved)", a2)
+		}
+
+		// Member "2024" must remain string "2024"
+		a3, _ := f.GetCellValue("Sheet1", "A3")
+		if a3 != "2024" {
+			t.Errorf("A3 = %q, want 2024", a3)
+		}
+
+		// Data column (Jan) should still be numeric
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		if b2 != "100" {
+			t.Errorf("B2 = %q, want 100", b2)
+		}
+	})
+
+	t.Run("sparse cells render as empty cells", func(t *testing.T) {
+		sparseResp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+				}},
+				{Ordinal: 1, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 1, Value: 999.0},
+			},
+		}
+
+		outFile := filepath.Join(t.TempDir(), "sparse.xlsx")
+		captureAll(t, func() {
+			err := writeXLSX(sparseResp, outFile, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		f, err := excelize.OpenFile(outFile)
+		if err != nil {
+			t.Fatalf("cannot open xlsx: %v", err)
+		}
+		defer f.Close()
+
+		// B2 (Jan/Revenue) should be empty (ordinal 0 missing)
+		b2, _ := f.GetCellValue("Sheet1", "B2")
+		if b2 != "" {
+			t.Errorf("B2 should be empty for missing ordinal, got %q", b2)
+		}
+
+		// C2 (Feb/Revenue) should be 999
+		c2, _ := f.GetCellValue("Sheet1", "C2")
+		if c2 != "999" {
+			t.Errorf("C2 = %q, want 999", c2)
+		}
+	})
+}
+
+// ===========================================================================
+// Integration tests — XLSX file export via runExport
+// ===========================================================================
+
+func TestRunExport_XLSXFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.xlsx")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// Verify success message
+	if !strings.Contains(captured.Stderr, "Exported 2 rows") {
+		t.Errorf("stderr should contain export message, got: %s", captured.Stderr)
+	}
+
+	// Nothing on stdout
+	if strings.TrimSpace(captured.Stdout) != "" {
+		t.Errorf("stdout should be empty for file output, got: %s", captured.Stdout)
+	}
+
+	// Open and verify
+	f, err := excelize.OpenFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot open xlsx: %v", err)
+	}
+	defer f.Close()
+
+	a1, _ := f.GetCellValue("Sheet1", "A1")
+	if a1 != "DIM1" {
+		t.Errorf("A1 = %q, want DIM1", a1)
+	}
+	b2, _ := f.GetCellValue("Sheet1", "B2")
+	if b2 != "1000" {
+		t.Errorf("B2 = %q, want 1000", b2)
+	}
+}
+
+func TestRunExport_XLSXServerError(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.xlsx")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`View not found`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("stderr should contain error, got: %s", captured.Stderr)
+	}
+
+	if _, err := os.Stat(outFile); err == nil {
+		t.Error("XLSX file should not be created on server error")
+	}
+}
+
+func TestRunExport_XLSXUsesPOST(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportOut = filepath.Join(t.TempDir(), "out.xlsx")
+
+	var capturedMethod string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if capturedMethod != "POST" {
+		t.Errorf("XLSX export should use POST for tm1.Execute, got %q", capturedMethod)
+	}
+}
+
+func TestRunExport_XLSXNoHeader(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	outFile := filepath.Join(t.TempDir(), "report.xlsx")
+	exportOut = outFile
+	exportNoHeader = true
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		err := runExport(exportCmd, []string{"Sales"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	f, err := excelize.OpenFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot open xlsx: %v", err)
+	}
+	defer f.Close()
+
+	a1, _ := f.GetCellValue("Sheet1", "A1")
+	if a1 != "Revenue" {
+		t.Errorf("A1 = %q, want Revenue (first data row, no header)", a1)
+	}
+}
+
+// ===========================================================================
+// MDX Export Tests
+// ===========================================================================
+
+func mdxResponseJSON(id string) []byte {
+	resp := model.CellsetResponse{
+		ID: id,
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost"}}},
+			}},
+		},
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+func cellsCollectionJSON(cells []model.CellsetCell) []byte {
+	resp := struct {
+		Value []model.CellsetCell `json:"value"`
+	}{Value: cells}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+var testMDXCells = []model.CellsetCell{
+	{Ordinal: 0, Value: 1000.0},
+	{Ordinal: 1, Value: 2000.0},
+	{Ordinal: 2, Value: 500.0},
+	{Ordinal: 3, Value: 800.0},
+}
+
+func TestRunExport_MDXToScreen(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT {[Period].[Jan],[Period].[Feb]} ON COLUMNS, {[Measure].Members} ON ROWS FROM [Sales]"
+
+	deleteCalled := false
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-cellset-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE" && strings.Contains(r.URL.Path, "Cellsets"):
+			deleteCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	for _, want := range []string{"Jan", "Feb", "Revenue", "Cost", "1000", "2000", "500", "800"} {
+		if !strings.Contains(captured.Stdout, want) {
+			t.Errorf("output missing %q, got:\n%s", want, captured.Stdout)
+		}
+	}
+
+	if !deleteCalled {
+		t.Error("DELETE should be called to clean up cellset")
+	}
+}
+
+func TestRunExport_MDXCSVFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT ... FROM [Sales]"
+	outFile := filepath.Join(t.TempDir(), "mdx_export.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Exported 2 rows") {
+		t.Errorf("stderr should contain export summary, got: %s", captured.Stderr)
+	}
+
+	f, err := os.Open(outFile)
+	if err != nil {
+		t.Fatalf("cannot open output file: %v", err)
+	}
+	defer f.Close()
+
+	records, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatalf("cannot parse CSV: %v", err)
+	}
+
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(records))
+	}
+	if records[1][1] != "1000" {
+		t.Errorf("Revenue/Jan = %q, want 1000", records[1][1])
+	}
+}
+
+func TestRunExport_MDXServerError(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT INVALID FROM [Sales]"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": {"message": "Invalid MDX"}}`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runExport(exportCmd, []string{})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "HTTP 400") {
+		t.Errorf("stderr should contain HTTP 400 error, got:\n%s", captured.Stderr)
+	}
+}
+
+func TestRunExport_MDXCellsetCleanupOnError(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT ... FROM [Sales]"
+
+	deleteCalled := false
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "ExecuteMDX"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("cleanup-test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("server error"))
+		case r.Method == "DELETE" && strings.Contains(r.URL.Path, "Cellsets"):
+			deleteCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captureAll(t, func() {
+		runExport(exportCmd, []string{})
+	})
+
+	if !deleteCalled {
+		t.Error("DELETE should be called even when cell fetch fails")
+	}
+}
+
+func TestRunExport_MDXEndpointUsesPOST(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT {[Period].[Jan]} ON 0 FROM [Sales]"
+
+	var capturedMethod string
+	var capturedBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "ExecuteMDX"):
+			capturedMethod = r.Method
+			body := make([]byte, r.ContentLength)
+			r.Body.Read(body)
+			capturedBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(mdxResponseJSON("test-id"))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Cells"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(cellsCollectionJSON(testMDXCells))
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+
+	captureAll(t, func() {
+		runExport(exportCmd, []string{})
+	})
+
+	if capturedMethod != "POST" {
+		t.Errorf("ExecuteMDX should use POST, got %q", capturedMethod)
+	}
+	if !strings.Contains(capturedBody, "MDX") {
+		t.Errorf("POST body should contain MDX key, got: %s", capturedBody)
+	}
+}
+
+func TestRunExport_ViewAndMDXBoth(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	exportMDX = "SELECT ... FROM [Sales]"
+
+	err := runExport(exportCmd, []string{"Sales"})
+	if err == nil {
+		t.Fatal("expected error when both --view and --mdx specified")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Errorf("error should mention 'not both', got: %s", err.Error())
+	}
+}
+
+func TestRunExport_ViewNoCube(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	err := runExport(exportCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when --view without cube")
+	}
+	if !strings.Contains(err.Error(), "Cube name is required") {
+		t.Errorf("error should mention cube requirement, got: %s", err.Error())
 	}
 }
