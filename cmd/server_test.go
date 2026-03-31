@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"tm1cli/internal/config"
@@ -72,6 +73,10 @@ func TestRunWhoami_NoConfig(t *testing.T) {
 	// Set HOME to empty temp dir — no config file
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	// Prevent local config resolution from finding config in cwd ancestors
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	t.Cleanup(func() { os.Chdir(origDir) })
 
 	captured := captureAll(t, func() {
 		err := runWhoami(whoamiCmd, nil)
@@ -263,6 +268,10 @@ func TestRunServerInfo_NoConfig(t *testing.T) {
 	// Set HOME to empty temp dir — no config file
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	// Prevent local config resolution from finding config in cwd ancestors
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	t.Cleanup(func() { os.Chdir(origDir) })
 
 	captured := captureAll(t, func() {
 		err := runServerInfo(serverInfoCmd, nil)
