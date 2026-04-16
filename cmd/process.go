@@ -335,8 +335,7 @@ func runProcessDump(cmd *cobra.Command, args []string) error {
 	}
 
 	if procDumpOut == "" {
-		out, _ := json.MarshalIndent(detail, "", "  ")
-		fmt.Println(string(out))
+		output.PrintJSON(detail)
 		return nil
 	}
 

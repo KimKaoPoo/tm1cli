@@ -126,7 +126,7 @@ func (c *Client) Get(endpoint string) ([]byte, error) {
 	return body, err
 }
 
-func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
+func (c *Client) doWithPayload(method, endpoint string, payload interface{}) ([]byte, error) {
 	url := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
 	var bodyReader io.Reader
 	if payload != nil {
@@ -136,12 +136,20 @@ func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
 		}
 		bodyReader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest("POST", url, bodyReader)
+	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
 	body, _, err := c.do(req)
 	return body, err
+}
+
+func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
+	return c.doWithPayload("POST", endpoint, payload)
+}
+
+func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, error) {
+	return c.doWithPayload("PATCH", endpoint, payload)
 }
 
 func (c *Client) Delete(endpoint string) error {
@@ -152,24 +160,6 @@ func (c *Client) Delete(endpoint string) error {
 	}
 	_, _, err = c.do(req)
 	return err
-}
-
-func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, error) {
-	url := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
-	var bodyReader io.Reader
-	if payload != nil {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("cannot marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(data)
-	}
-	req, err := http.NewRequest("PATCH", url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("cannot create request: %w", err)
-	}
-	body, _, err := c.do(req)
-	return body, err
 }
 
 func (c *Client) wrapError(err error) error {

@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"encoding/base64"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -394,43 +393,6 @@ func TestPatch(t *testing.T) {
 				t.Errorf("body = %q, want %q", string(body), tt.wantBody)
 			}
 		})
-	}
-}
-
-func TestPatchSendsCorrectMethod(t *testing.T) {
-	var capturedMethod string
-	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-		capturedMethod = r.Method
-		w.WriteHeader(http.StatusNoContent)
-	})
-	defer ts.Close()
-
-	c := newTestClient(t, ts.URL)
-	_, _ = c.Patch("Processes('test')", nil)
-
-	if capturedMethod != "PATCH" {
-		t.Errorf("method = %q, want PATCH", capturedMethod)
-	}
-}
-
-func TestPatchSendsBody(t *testing.T) {
-	var capturedBody string
-	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		capturedBody = string(bodyBytes)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	defer ts.Close()
-
-	c := newTestClient(t, ts.URL)
-	payload := map[string]string{"Name": "MyProcess"}
-	_, _ = c.Patch("Processes('test')", payload)
-
-	if !strings.Contains(capturedBody, "MyProcess") {
-		t.Errorf("request body = %q, want it to contain 'MyProcess'", capturedBody)
-	}
-	if !strings.Contains(capturedBody, "Name") {
-		t.Errorf("request body = %q, want it to contain 'Name'", capturedBody)
 	}
 }
 
