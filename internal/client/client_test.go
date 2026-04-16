@@ -324,6 +324,78 @@ func TestDelete(t *testing.T) {
 	})
 }
 
+func TestPatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     interface{}
+		handler     http.HandlerFunc
+		wantErr     bool
+		errContains string
+		wantBody    string
+	}{
+		{
+			name:    "successful PATCH with body",
+			payload: map[string]interface{}{"Name": "TestProcess"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "PATCH" {
+					t.Errorf("method = %q, want PATCH", r.Method)
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", r.Header.Get("Content-Type"))
+				}
+				w.WriteHeader(http.StatusNoContent)
+			},
+			wantBody: "",
+		},
+		{
+			name:    "PATCH 404 returns not found",
+			payload: map[string]interface{}{"Name": "Missing"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`Not found`))
+			},
+			wantErr:     true,
+			errContains: "Not found",
+		},
+		{
+			name:    "PATCH 500 returns HTTP error",
+			payload: map[string]interface{}{"Name": "Broken"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`Server error`))
+			},
+			wantErr:     true,
+			errContains: "HTTP 500",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := newTestServer(tt.handler)
+			defer ts.Close()
+
+			c := newTestClient(t, ts.URL)
+			body, err := c.Patch("Processes('test')", tt.payload)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(body) != tt.wantBody {
+				t.Errorf("body = %q, want %q", string(body), tt.wantBody)
+			}
+		})
+	}
+}
+
 func TestSetAuth(t *testing.T) {
 	t.Run("basic auth sets Authorization header", func(t *testing.T) {
 		var capturedAuth string

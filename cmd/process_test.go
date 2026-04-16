@@ -6,9 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
+
+	"gopkg.in/yaml.v3"
 )
 
 // --- filterSystemProcesses tests ---
@@ -961,3 +965,493 @@ func TestRunProcessList_FilterFallbackWarning(t *testing.T) {
 		t.Error("output should NOT contain 'RunReport' (doesn't match 'load' filter)")
 	}
 }
+
+// ============================================================
+// Integration tests — runProcessDump
+// ============================================================
+
+func TestRunProcessDump_JSONStdout(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "Processes") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(processDetailJSON("LoadData"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var detail model.ProcessDetail
+	if err := json.Unmarshal([]byte(captured.Stdout), &detail); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if detail.Name != "LoadData" {
+		t.Errorf("Name = %q, want 'LoadData'", detail.Name)
+	}
+	if detail.PrologProcedure != "# prolog code" {
+		t.Errorf("PrologProcedure = %q, want '# prolog code'", detail.PrologProcedure)
+	}
+}
+
+func TestRunProcessDump_JSONFile(t *testing.T) {
+	resetCmdFlags(t)
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "test.json")
+	procDumpOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(processDetailJSON("LoadData"))
+	})
+
+	captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+
+	var detail model.ProcessDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		t.Fatalf("file is not valid JSON: %v", err)
+	}
+	if detail.Name != "LoadData" {
+		t.Errorf("Name = %q, want 'LoadData'", detail.Name)
+	}
+}
+
+func TestRunProcessDump_YAMLFile(t *testing.T) {
+	resetCmdFlags(t)
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "test.yaml")
+	procDumpOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(processDetailJSON("LoadData"))
+	})
+
+	captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+
+	var detail model.ProcessDetail
+	if err := yaml.Unmarshal(data, &detail); err != nil {
+		t.Fatalf("file is not valid YAML: %v", err)
+	}
+	if detail.Name != "LoadData" {
+		t.Errorf("Name = %q, want 'LoadData'", detail.Name)
+	}
+
+	yamlStr := string(data)
+	if !strings.Contains(yamlStr, "prolog:") {
+		t.Error("YAML should use 'prolog' key")
+	}
+}
+
+func TestRunProcessDump_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Not found`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"NonExistent"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("stderr should contain 'Not found', got: %q", captured.Stderr)
+	}
+}
+
+func TestRunProcessDump_UnsupportedExtension(t *testing.T) {
+	resetCmdFlags(t)
+	procDumpOut = "output.txt"
+
+	err := runProcessDump(processDumpCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for unsupported extension")
+	}
+	if !strings.Contains(err.Error(), "Unsupported file format") {
+		t.Errorf("error = %q, want 'Unsupported file format'", err.Error())
+	}
+}
+
+// ============================================================
+// Integration tests — runProcessLoad
+// ============================================================
+
+func TestRunProcessLoad_CreateNew(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{
+		Name:            "LoadData",
+		PrologProcedure: "# code",
+		DataSource:      model.ProcessDataSource{Type: "None"},
+	}
+	data, _ := json.MarshalIndent(detail, "", "  ")
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	var postBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "Processes") {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`Not found`))
+			return
+		}
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "Processes") {
+			body, _ := io.ReadAll(r.Body)
+			postBody = string(body)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "Created") {
+		t.Errorf("output should contain 'Created', got: %q", captured.Stdout)
+	}
+	if !strings.Contains(postBody, "LoadData") {
+		t.Errorf("POST body should contain 'LoadData', got: %s", postBody)
+	}
+}
+
+func TestRunProcessLoad_UpdateExisting(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{
+		Name:            "LoadData",
+		PrologProcedure: "# updated code",
+		DataSource:      model.ProcessDataSource{Type: "None"},
+	}
+	data, _ := json.MarshalIndent(detail, "", "  ")
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	var patchBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "Processes") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(processDetailJSON("LoadData"))
+			return
+		}
+		if r.Method == "PATCH" {
+			body, _ := io.ReadAll(r.Body)
+			patchBody = string(body)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "Updated") {
+		t.Errorf("output should contain 'Updated', got: %q", captured.Stdout)
+	}
+	if !strings.Contains(patchBody, "# updated code") {
+		t.Errorf("PATCH body should contain '# updated code', got: %s", patchBody)
+	}
+}
+
+func TestRunProcessLoad_CreateOnly_Exists(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadCreateOnly = true
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
+	data, _ := json.Marshal(detail)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "Processes") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(processDetailJSON("LoadData"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "already exists") {
+		t.Errorf("stderr should contain 'already exists', got: %q", captured.Stderr)
+	}
+}
+
+func TestRunProcessLoad_UpdateOnly_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadUpdateOnly = true
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
+	data, _ := json.Marshal(detail)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`Not found`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "does not exist") {
+		t.Errorf("stderr should contain 'does not exist', got: %q", captured.Stderr)
+	}
+}
+
+func TestRunProcessLoad_MutualExclusive(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadCreateOnly = true
+	procLoadUpdateOnly = true
+	procLoadFile = "dummy.json"
+
+	err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for mutual exclusive flags")
+	}
+	if !strings.Contains(err.Error(), "Cannot use --create-only and --update-only together") {
+		t.Errorf("error = %q, want mutual exclusivity error", err.Error())
+	}
+}
+
+func TestRunProcessLoad_UnsupportedExtension(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadFile = "data.txt"
+
+	err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for unsupported extension")
+	}
+	if !strings.Contains(err.Error(), "Unsupported file format") {
+		t.Errorf("error = %q, want 'Unsupported file format'", err.Error())
+	}
+}
+
+func TestRunProcessLoad_NameOverride(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{
+		Name:       "OldName",
+		DataSource: model.ProcessDataSource{Type: "None"},
+	}
+	data, _ := json.Marshal(detail)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	var postBody string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`Not found`))
+			return
+		}
+		if r.Method == "POST" {
+			body, _ := io.ReadAll(r.Body)
+			postBody = string(body)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"NewName"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// POST body should have "NewName", not "OldName"
+	if strings.Contains(postBody, "OldName") {
+		t.Error("POST body should NOT contain 'OldName'")
+	}
+	if !strings.Contains(postBody, "NewName") {
+		t.Errorf("POST body should contain 'NewName', got: %s", postBody)
+	}
+}
+
+func TestRunProcessLoad_JSONOutput(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "proc.json")
+	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
+	data, _ := json.Marshal(detail)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
+	procLoadFile = inFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`Not found`))
+			return
+		}
+		if r.Method == "POST" {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(captured.Stdout), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, captured.Stdout)
+	}
+	if result["status"] != "created" {
+		t.Errorf("status = %q, want 'created'", result["status"])
+	}
+	if result["process"] != "LoadData" {
+		t.Errorf("process = %q, want 'LoadData'", result["process"])
+	}
+}
+
+// ============================================================
+// processExists tests
+// ============================================================
+
+func TestProcessExists_True(t *testing.T) {
+	resetCmdFlags(t)
+
+	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Name":"LoadData"}`))
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+	_ = ts
+
+	exists, err := processExists(cl, "LoadData")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Error("expected process to exist")
+	}
+}
+
+func TestProcessExists_False(t *testing.T) {
+	resetCmdFlags(t)
+
+	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Not found`))
+	})
+	_ = ts
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	exists, err := processExists(cl, "NonExistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exists {
+		t.Error("expected process to not exist")
+	}
+}
+
+func TestProcessExists_Error(t *testing.T) {
+	resetCmdFlags(t)
+
+	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`Server error`))
+	})
+	_ = ts
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	exists, err := processExists(cl, "Broken")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if exists {
+		t.Error("expected exists=false on error")
+	}
+}
+

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,9 @@ import (
 	"time"
 	"tm1cli/internal/config"
 )
+
+// ErrNotFound is returned when the TM1 server responds with HTTP 404.
+var ErrNotFound = errors.New("not found")
 
 type Client struct {
 	httpClient *http.Client
@@ -126,7 +130,7 @@ func (c *Client) Get(endpoint string) ([]byte, error) {
 	return body, err
 }
 
-func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
+func (c *Client) doWithPayload(method, endpoint string, payload interface{}) ([]byte, error) {
 	url := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
 	var bodyReader io.Reader
 	if payload != nil {
@@ -136,12 +140,20 @@ func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
 		}
 		bodyReader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest("POST", url, bodyReader)
+	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
 	body, _, err := c.do(req)
 	return body, err
+}
+
+func (c *Client) Post(endpoint string, payload interface{}) ([]byte, error) {
+	return c.doWithPayload("POST", endpoint, payload)
+}
+
+func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, error) {
+	return c.doWithPayload("PATCH", endpoint, payload)
 }
 
 func (c *Client) Delete(endpoint string) error {
@@ -177,7 +189,7 @@ func (c *Client) httpError(status int, body []byte, endpoint string) error {
 	case 401:
 		return fmt.Errorf("Authentication failed. Check credentials.")
 	case 404:
-		return fmt.Errorf("Not found: %s", endpoint)
+		return fmt.Errorf("Not found: %s: %w", endpoint, ErrNotFound)
 	default:
 		short := string(body)
 		if len(short) > 200 {
