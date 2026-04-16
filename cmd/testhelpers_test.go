@@ -183,6 +183,10 @@ func zeroAllFlags() {
 	procListShowSystem = false
 	procListCount = false
 	procRunParams = nil
+	procDumpOut = ""
+	procLoadFile = ""
+	procLoadCreateOnly = false
+	procLoadUpdateOnly = false
 	exportView = ""
 	exportMDX = ""
 	exportOut = ""
@@ -291,6 +295,24 @@ func processesJSON(procs ...string) []byte {
 		resp.Value = append(resp.Value, proc{Name: name})
 	}
 	data, _ := json.Marshal(resp)
+	return data
+}
+
+// processDetailJSON returns JSON for a TM1 process detail response.
+func processDetailJSON(name string) []byte {
+	detail := model.ProcessDetail{
+		Name:              name,
+		PrologProcedure:   "# prolog code",
+		MetadataProcedure: "",
+		DataProcedure:     "CellPutN(1, 'Cube', 'e1', 'e2');",
+		EpilogProcedure:   "",
+		Parameters: []model.ProcessParamDef{
+			{Name: "pYear", Prompt: "Year", Value: float64(2024), Type: "Numeric"},
+		},
+		DataSource: model.ProcessDataSource{Type: "None"},
+		Variables:  []model.ProcessVariable{},
+	}
+	data, _ := json.Marshal(detail)
 	return data
 }
 
