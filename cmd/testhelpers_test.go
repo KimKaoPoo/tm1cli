@@ -183,6 +183,10 @@ func zeroAllFlags() {
 	procListShowSystem = false
 	procListCount = false
 	procRunParams = nil
+	procDumpOut = ""
+	procLoadFile = ""
+	procLoadCreateOnly = false
+	procLoadUpdateOnly = false
 	exportView = ""
 	exportMDX = ""
 	exportOut = ""

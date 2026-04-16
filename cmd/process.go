@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var processCmd = &cobra.Command{
@@ -272,6 +275,226 @@ func runProcessRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// --- process dump ---
+
+var procDumpOut string
+
+var processDumpCmd = &cobra.Command{
+	Use:   "dump <name>",
+	Short: "Export a TI process definition to file",
+	Long: `Export a TI process definition to a JSON or YAML file.
+
+Equivalent to: Right-click → Export in TM1 Architect
+REST API:      GET /Processes('name')
+
+Format is detected from file extension (.json, .yaml, .yml).
+Without -o flag, prints JSON to stdout.`,
+	Example: `  tm1cli process dump "LoadData" -o loaddata.yaml
+  tm1cli process dump "LoadData" -o loaddata.json
+  tm1cli process dump "LoadData"`,
+	Args: cobra.ExactArgs(1),
+	RunE: runProcessDump,
+}
+
+func runProcessDump(cmd *cobra.Command, args []string) error {
+	processName := args[0]
+
+	if procDumpOut != "" {
+		ext := strings.ToLower(filepath.Ext(procDumpOut))
+		if ext != ".json" && ext != ".yaml" && ext != ".yml" {
+			return fmt.Errorf("Unsupported format %q. Use .json, .yaml, or .yml.", ext)
+		}
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		output.PrintError(err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), false)
+		return errSilent
+	}
+
+	endpoint := fmt.Sprintf("Processes('%s')?$expand=Parameters,Variables", url.PathEscape(processName))
+	data, err := cl.Get(endpoint)
+	if err != nil {
+		output.PrintError(err.Error(), false)
+		return errSilent
+	}
+
+	var detail model.ProcessDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		output.PrintError("Cannot parse process definition from server response.", false)
+		return errSilent
+	}
+
+	if procDumpOut == "" {
+		out, err := json.MarshalIndent(detail, "", "  ")
+		if err != nil {
+			output.PrintError("Cannot serialize process definition.", false)
+			return errSilent
+		}
+		fmt.Println(string(out))
+		return nil
+	}
+
+	ext := strings.ToLower(filepath.Ext(procDumpOut))
+	switch ext {
+	case ".json":
+		out, err := json.MarshalIndent(detail, "", "  ")
+		if err != nil {
+			output.PrintError("Cannot serialize process definition.", false)
+			return errSilent
+		}
+		if err := os.WriteFile(procDumpOut, out, 0644); err != nil {
+			output.PrintError(fmt.Sprintf("Cannot write file: %s", err.Error()), false)
+			return errSilent
+		}
+	case ".yaml", ".yml":
+		out, err := yaml.Marshal(detail)
+		if err != nil {
+			output.PrintError("Cannot serialize process definition.", false)
+			return errSilent
+		}
+		if err := os.WriteFile(procDumpOut, out, 0644); err != nil {
+			output.PrintError(fmt.Sprintf("Cannot write file: %s", err.Error()), false)
+			return errSilent
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Exported process '%s' to %s\n", processName, procDumpOut)
+	return nil
+}
+
+// --- process load ---
+
+var (
+	procLoadFile       string
+	procLoadCreateOnly bool
+	procLoadUpdateOnly bool
+)
+
+var processLoadCmd = &cobra.Command{
+	Use:   "load <name>",
+	Short: "Import a TI process from file",
+	Long: `Import a TI process definition from a JSON or YAML file.
+
+Equivalent to: Import in TM1 Architect
+REST API:      PATCH /Processes('name') or POST /Processes
+
+Format is detected from file extension (.json, .yaml, .yml).
+By default, tries to update an existing process (PATCH).
+If the process does not exist, creates it (POST).`,
+	Example: `  tm1cli process load "LoadData" -f loaddata.yaml
+  tm1cli process load "LoadData" -f loaddata.json
+  tm1cli process load "NewProcess" -f process.yaml --create-only
+  tm1cli process load "LoadData" -f process.yaml --update-only`,
+	Args: cobra.ExactArgs(1),
+	RunE: runProcessLoad,
+}
+
+func runProcessLoad(cmd *cobra.Command, args []string) error {
+	processName := args[0]
+
+	if procLoadFile == "" {
+		return fmt.Errorf("--file (-f) is required")
+	}
+
+	if procLoadCreateOnly && procLoadUpdateOnly {
+		return fmt.Errorf("--create-only and --update-only are mutually exclusive")
+	}
+
+	ext := strings.ToLower(filepath.Ext(procLoadFile))
+	if ext != ".json" && ext != ".yaml" && ext != ".yml" {
+		return fmt.Errorf("Unsupported format %q. Use .json, .yaml, or .yml.", ext)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		output.PrintError(err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), false)
+		return errSilent
+	}
+
+	fileData, err := os.ReadFile(procLoadFile)
+	if err != nil {
+		output.PrintError(fmt.Sprintf("Cannot read file: %s", err.Error()), false)
+		return errSilent
+	}
+
+	var detail model.ProcessDetail
+	switch ext {
+	case ".json":
+		if err := json.Unmarshal(fileData, &detail); err != nil {
+			output.PrintError("Cannot parse JSON file.", false)
+			return errSilent
+		}
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(fileData, &detail); err != nil {
+			output.PrintError("Cannot parse YAML file.", false)
+			return errSilent
+		}
+	}
+
+	// CLI argument overrides the name stored in the file
+	detail.Name = processName
+
+	if procLoadCreateOnly {
+		_, err := cl.Post("Processes", detail)
+		if err != nil {
+			output.PrintError(err.Error(), false)
+			return errSilent
+		}
+		fmt.Printf("Process '%s' created successfully.\n", processName)
+		return nil
+	}
+
+	patchEndpoint := fmt.Sprintf("Processes('%s')", url.PathEscape(processName))
+
+	if procLoadUpdateOnly {
+		_, status, err := cl.Patch(patchEndpoint, detail)
+		if err != nil {
+			if status == 404 {
+				output.PrintError(fmt.Sprintf("Process '%s' not found. Cannot update.", processName), false)
+			} else {
+				output.PrintError(err.Error(), false)
+			}
+			return errSilent
+		}
+		fmt.Printf("Process '%s' updated successfully.\n", processName)
+		return nil
+	}
+
+	// Default: try PATCH, fall back to POST only on 404
+	_, status, patchErr := cl.Patch(patchEndpoint, detail)
+	if patchErr == nil {
+		fmt.Printf("Process '%s' updated successfully.\n", processName)
+		return nil
+	}
+
+	if status != 404 {
+		output.PrintError(patchErr.Error(), false)
+		return errSilent
+	}
+
+	// Process not found — create it
+	_, postErr := cl.Post("Processes", detail)
+	if postErr != nil {
+		output.PrintError(postErr.Error(), false)
+		return errSilent
+	}
+	fmt.Printf("Process '%s' created successfully.\n", processName)
+	return nil
+}
+
 func init() {
 	rootCmd.AddCommand(processCmd)
 	processCmd.AddCommand(processListCmd)
@@ -284,4 +507,13 @@ func init() {
 	processListCmd.Flags().BoolVar(&procListCount, "count", false, "Show count only")
 
 	processRunCmd.Flags().StringArrayVar(&procRunParams, "param", nil, "Process parameter as Key=Value (repeatable)")
+
+	processCmd.AddCommand(processDumpCmd)
+	processCmd.AddCommand(processLoadCmd)
+
+	processDumpCmd.Flags().StringVarP(&procDumpOut, "out", "o", "", "Output file path (.json, .yaml, .yml)")
+
+	processLoadCmd.Flags().StringVarP(&procLoadFile, "file", "f", "", "Input file path (.json, .yaml, .yml)")
+	processLoadCmd.Flags().BoolVar(&procLoadCreateOnly, "create-only", false, "Only create new process, fail if exists")
+	processLoadCmd.Flags().BoolVar(&procLoadUpdateOnly, "update-only", false, "Only update existing process, fail if not found")
 }

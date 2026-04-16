@@ -6,9 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
+
+	"gopkg.in/yaml.v3"
 )
 
 // --- filterSystemProcesses tests ---
@@ -961,3 +965,513 @@ func TestRunProcessList_FilterFallbackWarning(t *testing.T) {
 		t.Error("output should NOT contain 'RunReport' (doesn't match 'load' filter)")
 	}
 }
+
+// ============================================================
+// Helpers for dump/load tests
+// ============================================================
+
+func processDetailJSON() []byte {
+	return []byte(`{
+		"@odata.context": "...",
+		"Name": "LoadData",
+		"PrologProcedure": "#Region Prolog\nIF(1=1);\nEndIf;",
+		"MetadataProcedure": "",
+		"DataProcedure": "CellPutN(1, 'Sales', 'Jan', 'Actual');",
+		"EpilogProcedure": "",
+		"HasSecurityAccess": false,
+		"Parameters": [
+			{"Name": "pYear", "Prompt": "Year", "Value": "2024", "Type": "String"}
+		],
+		"DataSource": {
+			"Type": "None"
+		},
+		"Variables": []
+	}`)
+}
+
+// ============================================================
+// Integration tests — runProcessDump
+// ============================================================
+
+func TestRunProcessDump_JSONStdout(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(processDetailJSON())
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !json.Valid([]byte(captured.Stdout)) {
+		t.Fatalf("stdout is not valid JSON:\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "LoadData") {
+		t.Errorf("stdout missing 'LoadData':\n%s", captured.Stdout)
+	}
+	if !strings.Contains(captured.Stdout, "PrologProcedure") {
+		t.Errorf("stdout missing 'PrologProcedure':\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessDump_JSONFile(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "loaddata.json")
+	procDumpOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(processDetailJSON())
+	})
+
+	captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	fileData, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+	if !json.Valid(fileData) {
+		t.Fatalf("file content is not valid JSON:\n%s", fileData)
+	}
+	var detail model.ProcessDetail
+	if err := json.Unmarshal(fileData, &detail); err != nil {
+		t.Fatalf("cannot parse file as ProcessDetail: %v", err)
+	}
+	if detail.Name != "LoadData" {
+		t.Errorf("detail.Name = %q, want 'LoadData'", detail.Name)
+	}
+}
+
+func TestRunProcessDump_YAMLFile(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "loaddata.yaml")
+	procDumpOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(processDetailJSON())
+	})
+
+	captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	fileData, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("cannot read output file: %v", err)
+	}
+	var detail model.ProcessDetail
+	if err := yaml.Unmarshal(fileData, &detail); err != nil {
+		t.Fatalf("cannot parse file as YAML ProcessDetail: %v", err)
+	}
+	if detail.Name != "LoadData" {
+		t.Errorf("detail.Name = %q, want 'LoadData'", detail.Name)
+	}
+	// YAML tags use "prolog" not "PrologProcedure"
+	if !strings.Contains(string(fileData), "prolog:") {
+		t.Errorf("YAML output missing 'prolog:' key:\n%s", fileData)
+	}
+}
+
+func TestRunProcessDump_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Not found`))
+	})
+
+	captureAll(t, func() {
+		err := runProcessDump(processDumpCmd, []string{"NonExistent"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+}
+
+func TestRunProcessDump_InvalidExtension(t *testing.T) {
+	resetCmdFlags(t)
+	procDumpOut = "file.txt"
+
+	// No mock server — error should occur before any network call
+	err := runProcessDump(processDumpCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for unsupported format, got nil")
+	}
+	if !strings.Contains(err.Error(), "Unsupported format") {
+		t.Errorf("error = %q, want it to mention 'Unsupported format'", err.Error())
+	}
+}
+
+// ============================================================
+// Integration tests — runProcessLoad
+// ============================================================
+
+func writeProcessJSONFile(t *testing.T, dir string, detail model.ProcessDetail) string {
+	t.Helper()
+	data, err := json.MarshalIndent(detail, "", "  ")
+	if err != nil {
+		t.Fatalf("cannot marshal detail: %v", err)
+	}
+	path := filepath.Join(dir, "process.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("cannot write file: %v", err)
+	}
+	return path
+}
+
+func writeProcessYAMLFile(t *testing.T, dir string, detail model.ProcessDetail) string {
+	t.Helper()
+	data, err := yaml.Marshal(detail)
+	if err != nil {
+		t.Fatalf("cannot marshal detail: %v", err)
+	}
+	path := filepath.Join(dir, "process.yaml")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("cannot write file: %v", err)
+	}
+	return path
+}
+
+func TestRunProcessLoad_PatchSuccess(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:            "LoadData",
+		PrologProcedure: "IF(1=1);",
+		DataSource:      model.ProcessDataSource{Type: "None"},
+	}
+	procLoadFile = writeProcessJSONFile(t, tmpDir, detail)
+
+	var capturedMethod string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if capturedMethod != "PATCH" {
+		t.Errorf("method = %q, want PATCH", capturedMethod)
+	}
+	if !strings.Contains(captured.Stdout, "updated successfully") {
+		t.Errorf("stdout missing success message:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessLoad_PatchFallbackToPost(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:       "NewProcess",
+		DataSource: model.ProcessDataSource{Type: "None"},
+	}
+	procLoadFile = writeProcessJSONFile(t, tmpDir, detail)
+
+	var capturedMethods []string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethods = append(capturedMethods, r.Method)
+		if r.Method == "PATCH" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`Not found`))
+			return
+		}
+		// POST
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"NewProcess"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if len(capturedMethods) < 2 {
+		t.Fatalf("expected at least 2 requests, got %d", len(capturedMethods))
+	}
+	if capturedMethods[0] != "PATCH" {
+		t.Errorf("first method = %q, want PATCH", capturedMethods[0])
+	}
+	if capturedMethods[1] != "POST" {
+		t.Errorf("second method = %q, want POST", capturedMethods[1])
+	}
+	if !strings.Contains(captured.Stdout, "created successfully") {
+		t.Errorf("stdout missing created message:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessLoad_CreateOnly(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadCreateOnly = true
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:       "NewProcess",
+		DataSource: model.ProcessDataSource{Type: "None"},
+	}
+	procLoadFile = writeProcessJSONFile(t, tmpDir, detail)
+
+	var capturedMethods []string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethods = append(capturedMethods, r.Method)
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	captured := captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"NewProcess"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	for _, m := range capturedMethods {
+		if m == "PATCH" {
+			t.Error("--create-only should not send PATCH request")
+		}
+	}
+	if len(capturedMethods) == 0 || capturedMethods[0] != "POST" {
+		t.Errorf("expected POST as first request, got: %v", capturedMethods)
+	}
+	if !strings.Contains(captured.Stdout, "created successfully") {
+		t.Errorf("stdout missing created message:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunProcessLoad_UpdateOnly404(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadUpdateOnly = true
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:       "NonExistent",
+		DataSource: model.ProcessDataSource{Type: "None"},
+	}
+	procLoadFile = writeProcessJSONFile(t, tmpDir, detail)
+
+	var capturedMethods []string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethods = append(capturedMethods, r.Method)
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Not found`))
+	})
+
+	captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"NonExistent"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	// Should not fall back to POST when --update-only is set
+	for _, m := range capturedMethods {
+		if m == "POST" {
+			t.Error("--update-only should not fall back to POST on 404")
+		}
+	}
+}
+
+func TestRunProcessLoad_YAMLFile(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:            "LoadData",
+		PrologProcedure: "IF(1=1);",
+		DataSource:      model.ProcessDataSource{Type: "None"},
+		Parameters:      []model.ProcessParamDef{{Name: "pYear", Type: "String"}},
+	}
+	procLoadFile = writeProcessYAMLFile(t, tmpDir, detail)
+
+	var capturedBody []byte
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	// PATCH body should be valid JSON containing the process fields
+	if !json.Valid(capturedBody) {
+		t.Fatalf("PATCH body is not valid JSON:\n%s", capturedBody)
+	}
+	if !strings.Contains(string(capturedBody), "LoadData") {
+		t.Errorf("PATCH body missing 'LoadData':\n%s", capturedBody)
+	}
+}
+
+func TestRunProcessLoad_MissingFileFlag(t *testing.T) {
+	resetCmdFlags(t)
+	// procLoadFile intentionally left empty
+
+	err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for missing --file, got nil")
+	}
+	if !strings.Contains(err.Error(), "--file") && !strings.Contains(err.Error(), "-f") {
+		t.Errorf("error = %q, want it to mention --file or -f", err.Error())
+	}
+}
+
+func TestRunProcessLoad_CreateOnlyUpdateOnlyMutuallyExclusive(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadCreateOnly = true
+	procLoadUpdateOnly = true
+	procLoadFile = "some.json" // won't be read; error should occur first
+
+	err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+	if err == nil {
+		t.Fatal("expected error for mutually exclusive flags, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %q, want it to mention 'mutually exclusive'", err.Error())
+	}
+}
+
+func TestRunProcessLoad_FileNotFound(t *testing.T) {
+	resetCmdFlags(t)
+	procLoadFile = "/nonexistent/path/process.json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		// Should not be reached
+		t.Error("no network call should be made when file is missing")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+}
+
+func TestRunProcessLoad_NonNotFoundErrorNoFallback(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	detail := model.ProcessDetail{
+		Name:       "LoadData",
+		DataSource: model.ProcessDataSource{Type: "None"},
+	}
+	procLoadFile = writeProcessJSONFile(t, tmpDir, detail)
+
+	var capturedMethods []string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethods = append(capturedMethods, r.Method)
+		// Return 500 for PATCH — should NOT fall back to POST
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`Internal Server Error`))
+	})
+
+	captureAll(t, func() {
+		err := runProcessLoad(processLoadCmd, []string{"LoadData"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	for _, m := range capturedMethods {
+		if m == "POST" {
+			t.Error("500 error should not fall back to POST")
+		}
+	}
+}
+
+func TestProcessDumpLoadRoundtrip(t *testing.T) {
+	resetCmdFlags(t)
+
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "roundtrip.json")
+	procDumpOut = outFile
+
+	// Step 1: dump to file
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(processDetailJSON())
+			return
+		}
+		t.Errorf("unexpected method %s in dump phase", r.Method)
+	})
+
+	captureAll(t, func() {
+		if err := runProcessDump(processDumpCmd, []string{"LoadData"}); err != nil {
+			t.Fatalf("dump failed: %v", err)
+		}
+	})
+
+	// Reset flags for load phase
+	zeroAllFlags()
+	procLoadFile = outFile
+
+	// Step 2: load from file, capture the PATCH body
+	var capturedBody []byte
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Errorf("unexpected method %s in load phase", r.Method)
+	})
+
+	captureAll(t, func() {
+		if err := runProcessLoad(processLoadCmd, []string{"LoadData"}); err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
+	})
+
+	// The PATCH body should be valid JSON and match the original detail
+	if !json.Valid(capturedBody) {
+		t.Fatalf("PATCH body is not valid JSON:\n%s", capturedBody)
+	}
+
+	var loaded model.ProcessDetail
+	if err := json.Unmarshal(capturedBody, &loaded); err != nil {
+		t.Fatalf("cannot parse PATCH body: %v", err)
+	}
+	if loaded.Name != "LoadData" {
+		t.Errorf("loaded.Name = %q, want 'LoadData'", loaded.Name)
+	}
+	if loaded.PrologProcedure != "#Region Prolog\nIF(1=1);\nEndIf;" {
+		t.Errorf("loaded.PrologProcedure = %q, want original value", loaded.PrologProcedure)
+	}
+	if len(loaded.Parameters) != 1 || loaded.Parameters[0].Name != "pYear" {
+		t.Errorf("loaded.Parameters = %+v, want one param 'pYear'", loaded.Parameters)
+	}
+}
+
