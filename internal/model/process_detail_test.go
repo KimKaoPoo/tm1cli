@@ -246,6 +246,29 @@ func TestProcessDataSourceJSON_Omitempty(t *testing.T) {
 			t.Error("should include asciiHeaderRecords")
 		}
 	})
+
+	t.Run("zero AsciiHeaderRecords preserved with pointer type", func(t *testing.T) {
+		ds := ProcessDataSource{
+			Type:               "ASCII",
+			AsciiDelimiterChar: ",",
+			AsciiHeaderRecords: intPtr(0),
+		}
+		data, err := json.Marshal(ds)
+		if err != nil {
+			t.Fatalf("Marshal error: %v", err)
+		}
+		if !strings.Contains(string(data), `"asciiHeaderRecords":0`) {
+			t.Errorf("zero AsciiHeaderRecords should be present in JSON, got: %s", data)
+		}
+
+		var got ProcessDataSource
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+		if got.AsciiHeaderRecords == nil || *got.AsciiHeaderRecords != 0 {
+			t.Errorf("AsciiHeaderRecords roundtrip failed, got: %v", got.AsciiHeaderRecords)
+		}
+	})
 }
 
 func TestProcessVariableJSON(t *testing.T) {

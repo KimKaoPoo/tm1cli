@@ -1118,7 +1118,9 @@ func TestRunProcessLoad_CreateNew(t *testing.T) {
 		DataSource:      model.ProcessDataSource{Type: "None"},
 	}
 	data, _ := json.MarshalIndent(detail, "", "  ")
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	var postBody string
@@ -1163,7 +1165,9 @@ func TestRunProcessLoad_UpdateExisting(t *testing.T) {
 		DataSource:      model.ProcessDataSource{Type: "None"},
 	}
 	data, _ := json.MarshalIndent(detail, "", "  ")
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	var patchBody string
@@ -1205,7 +1209,9 @@ func TestRunProcessLoad_CreateOnly_Exists(t *testing.T) {
 	inFile := filepath.Join(tmpDir, "proc.json")
 	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
 	data, _ := json.Marshal(detail)
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1237,7 +1243,9 @@ func TestRunProcessLoad_UpdateOnly_NotFound(t *testing.T) {
 	inFile := filepath.Join(tmpDir, "proc.json")
 	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
 	data, _ := json.Marshal(detail)
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1299,7 +1307,9 @@ func TestRunProcessLoad_NameOverride(t *testing.T) {
 		DataSource: model.ProcessDataSource{Type: "None"},
 	}
 	data, _ := json.Marshal(detail)
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	var postBody string
@@ -1342,7 +1352,9 @@ func TestRunProcessLoad_JSONOutput(t *testing.T) {
 	inFile := filepath.Join(tmpDir, "proc.json")
 	detail := model.ProcessDetail{Name: "LoadData", DataSource: model.ProcessDataSource{Type: "None"}}
 	data, _ := json.Marshal(detail)
-	os.WriteFile(inFile, data, 0600)
+	if err := os.WriteFile(inFile, data, 0600); err != nil {
+		t.Fatalf("test setup: cannot write fixture: %v", err)
+	}
 	procLoadFile = inFile
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
