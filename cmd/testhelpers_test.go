@@ -298,6 +298,24 @@ func processesJSON(procs ...string) []byte {
 	return data
 }
 
+// processDetailJSON returns JSON for a TM1 process detail response.
+func processDetailJSON(name string) []byte {
+	detail := model.ProcessDetail{
+		Name:              name,
+		PrologProcedure:   "# prolog code",
+		MetadataProcedure: "",
+		DataProcedure:     "CellPutN(1, 'Cube', 'e1', 'e2');",
+		EpilogProcedure:   "",
+		Parameters: []model.ProcessParamDef{
+			{Name: "pYear", Prompt: "Year", Value: float64(2024), Type: "Numeric"},
+		},
+		DataSource: model.ProcessDataSource{Type: "None"},
+		Variables:  []model.ProcessVariable{},
+	}
+	data, _ := json.Marshal(detail)
+	return data
+}
+
 // activeUserJSON returns JSON for a TM1 ActiveUser response.
 func activeUserJSON(name string) []byte {
 	data, _ := json.Marshal(model.ActiveUser{Name: name})
