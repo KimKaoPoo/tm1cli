@@ -200,6 +200,8 @@ func zeroAllFlags() {
 	subsetsAll = false
 	subsetsCount = false
 	subsetsHierarchy = ""
+	watchInterval = "5s"
+	watchSeconds = 0
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
