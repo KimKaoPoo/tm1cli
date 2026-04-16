@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -398,7 +399,7 @@ func processExists(cl *client.Client, name string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if strings.HasPrefix(err.Error(), "Not found:") {
+	if errors.Is(err, client.ErrNotFound) {
 		return false, nil
 	}
 	return false, err

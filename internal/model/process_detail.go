@@ -13,6 +13,9 @@ type ProcessDetail struct {
 }
 
 // ProcessParamDef represents a TI process parameter definition.
+// Note: Value is interface{} because TM1 returns string or numeric values.
+// YAML roundtrip may decode numeric values as int instead of float64;
+// this is benign because json.Marshal produces identical wire format for both.
 type ProcessParamDef struct {
 	Name   string      `json:"Name" yaml:"name"`
 	Prompt string      `json:"Prompt" yaml:"prompt"`

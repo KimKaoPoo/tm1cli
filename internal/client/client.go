@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,9 @@ import (
 	"time"
 	"tm1cli/internal/config"
 )
+
+// ErrNotFound is returned when the TM1 server responds with HTTP 404.
+var ErrNotFound = errors.New("not found")
 
 type Client struct {
 	httpClient *http.Client
@@ -185,7 +189,7 @@ func (c *Client) httpError(status int, body []byte, endpoint string) error {
 	case 401:
 		return fmt.Errorf("Authentication failed. Check credentials.")
 	case 404:
-		return fmt.Errorf("Not found: %s", endpoint)
+		return fmt.Errorf("Not found: %s: %w", endpoint, ErrNotFound)
 	default:
 		short := string(body)
 		if len(short) > 200 {
