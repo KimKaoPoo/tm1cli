@@ -299,8 +299,9 @@ Without -o flag, prints JSON to stdout.`,
 func runProcessDump(cmd *cobra.Command, args []string) error {
 	processName := args[0]
 
+	var ext string
 	if procDumpOut != "" {
-		ext := strings.ToLower(filepath.Ext(procDumpOut))
+		ext = strings.ToLower(filepath.Ext(procDumpOut))
 		if ext != ".json" && ext != ".yaml" && ext != ".yml" {
 			return fmt.Errorf("Unsupported format %q. Use .json, .yaml, or .yml.", ext)
 		}
@@ -341,16 +342,10 @@ func runProcessDump(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	ext := strings.ToLower(filepath.Ext(procDumpOut))
 	switch ext {
 	case ".json":
-		out, err := json.MarshalIndent(detail, "", "  ")
-		if err != nil {
-			output.PrintError("Cannot serialize process definition.", false)
-			return errSilent
-		}
-		if err := os.WriteFile(procDumpOut, out, 0644); err != nil {
-			output.PrintError(fmt.Sprintf("Cannot write file: %s", err.Error()), false)
+		if err := writeJSONFile(procDumpOut, detail); err != nil {
+			output.PrintError(err.Error(), false)
 			return errSilent
 		}
 	case ".yaml", ".yml":
