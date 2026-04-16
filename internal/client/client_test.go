@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -322,6 +323,127 @@ func TestDelete(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestPatch(t *testing.T) {
+	payload := map[string]string{"Name": "TestProcess"}
+
+	tests := []struct {
+		name        string
+		handler     http.HandlerFunc
+		wantStatus  int
+		wantBody    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "successful PATCH returns body",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"Name":"TestProcess"}`))
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"Name":"TestProcess"}`,
+		},
+		{
+			name: "successful PATCH no content",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			},
+			wantStatus: http.StatusNoContent,
+			wantBody:   "",
+		},
+		{
+			name: "404 returns not found",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`Not found`))
+			},
+			wantStatus:  http.StatusNotFound,
+			wantErr:     true,
+			errContains: "Not found",
+		},
+		{
+			name: "500 returns server error",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`Internal Server Error`))
+			},
+			wantStatus:  http.StatusInternalServerError,
+			wantErr:     true,
+			errContains: "HTTP 500",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := newTestServer(tt.handler)
+			defer ts.Close()
+
+			c := newTestClient(t, ts.URL)
+			body, status, err := c.Patch("Processes('test')", payload)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContains)
+				}
+				if status != tt.wantStatus {
+					t.Errorf("status = %d, want %d", status, tt.wantStatus)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("status = %d, want %d", status, tt.wantStatus)
+			}
+			if string(body) != tt.wantBody {
+				t.Errorf("body = %q, want %q", string(body), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestPatchSendsCorrectMethod(t *testing.T) {
+	var capturedMethod string
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	_, _, _ = c.Patch("Processes('test')", nil)
+
+	if capturedMethod != "PATCH" {
+		t.Errorf("method = %q, want PATCH", capturedMethod)
+	}
+}
+
+func TestPatchSendsBody(t *testing.T) {
+	var capturedBody string
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		capturedBody = string(bodyBytes)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	payload := map[string]string{"Name": "MyProcess"}
+	_, _, _ = c.Patch("Processes('test')", payload)
+
+	if !strings.Contains(capturedBody, "MyProcess") {
+		t.Errorf("request body = %q, want it to contain 'MyProcess'", capturedBody)
+	}
+	if !strings.Contains(capturedBody, "Name") {
+		t.Errorf("request body = %q, want it to contain 'Name'", capturedBody)
+	}
 }
 
 func TestSetAuth(t *testing.T) {
