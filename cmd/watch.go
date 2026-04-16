@@ -14,6 +14,8 @@ import (
 	"golang.org/x/term"
 )
 
+const ansiClearScreen = "\033[H\033[2J"
+
 var (
 	watchInterval string
 	watchSeconds  int
@@ -38,14 +40,6 @@ Note: watch is a terminal-only command and cannot be used with --output json.`,
 	RunE: runWatch,
 }
 
-func resolveExecutable() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("Cannot resolve executable path: %s", err)
-	}
-	return exe, nil
-}
-
 func parseWatchInterval(intervalFlag string, secondsFlag int) (time.Duration, error) {
 	if secondsFlag > 0 {
 		return time.Duration(secondsFlag) * time.Second, nil
@@ -60,19 +54,12 @@ func parseWatchInterval(intervalFlag string, secondsFlag int) (time.Duration, er
 	return d, nil
 }
 
-func isTerminal() bool {
-	return term.IsTerminal(int(os.Stdout.Fd()))
-}
-
 func runWatch(cmd *cobra.Command, args []string) error {
-	// Reject JSON output mode (checks flag → env → config → default)
-	cfg, _ := loadConfig()
-	if isJSONOutput(cfg) {
+	if isJSONOutput(nil) {
 		output.PrintError("watch is a terminal-only command and cannot be used with --output json.", false)
 		return errSilent
 	}
 
-	// Require -- separator
 	dashIdx := cmd.ArgsLenAtDash()
 	if dashIdx < 0 {
 		output.PrintError("Missing '--' separator.\nUsage: tm1cli watch [flags] -- <command> [args]", false)
@@ -84,30 +71,27 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// Parse interval
 	interval, err := parseWatchInterval(watchInterval, watchSeconds)
 	if err != nil {
 		output.PrintError(err.Error(), false)
 		return errSilent
 	}
 
-	// Resolve executable path
-	exe, err := resolveExecutable()
+	exe, err := os.Executable()
 	if err != nil {
-		output.PrintError(err.Error(), false)
+		output.PrintError(fmt.Sprintf("Cannot resolve executable path: %s", err), false)
 		return errSilent
 	}
 
-	// Signal handling for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	label := "tm1cli " + strings.Join(subArgs, " ")
-	useClear := isTerminal()
+	useClear := term.IsTerminal(int(os.Stdout.Fd()))
 
 	for {
 		if useClear {
-			fmt.Print("\033[H\033[2J")
+			fmt.Print(ansiClearScreen)
 		}
 		fmt.Printf("Every %s: %s    %s\n\n", interval, label, time.Now().Format("2006-01-02 15:04:05"))
 

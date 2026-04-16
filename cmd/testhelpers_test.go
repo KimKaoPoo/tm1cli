@@ -200,7 +200,7 @@ func zeroAllFlags() {
 	subsetsAll = false
 	subsetsCount = false
 	subsetsHierarchy = ""
-	watchInterval = "5s"
+	watchInterval = ""
 	watchSeconds = 0
 }
 

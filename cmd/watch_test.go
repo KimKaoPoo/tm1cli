@@ -34,12 +34,6 @@ func TestParseWatchInterval(t *testing.T) {
 			want:         1 * time.Minute,
 		},
 		{
-			name:         "30 seconds",
-			intervalFlag: "30s",
-			secondsFlag:  0,
-			want:         30 * time.Second,
-		},
-		{
 			name:         "minimum 1s",
 			intervalFlag: "1s",
 			secondsFlag:  0,
@@ -50,6 +44,12 @@ func TestParseWatchInterval(t *testing.T) {
 			intervalFlag: "5s",
 			secondsFlag:  10,
 			want:         10 * time.Second,
+		},
+		{
+			name:         "seconds flag overrides invalid interval",
+			intervalFlag: "abc",
+			secondsFlag:  5,
+			want:         5 * time.Second,
 		},
 		{
 			name:         "seconds flag 1",
@@ -82,12 +82,6 @@ func TestParseWatchInterval(t *testing.T) {
 			name:         "negative seconds ignored uses interval",
 			intervalFlag: "5s",
 			secondsFlag:  -1,
-			want:         5 * time.Second,
-		},
-		{
-			name:         "zero seconds ignored uses interval",
-			intervalFlag: "5s",
-			secondsFlag:  0,
 			want:         5 * time.Second,
 		},
 	}
@@ -157,10 +151,8 @@ func TestWatchCommand_FlagRegistration(t *testing.T) {
 func TestWatchCommand_RejectsJSONOutput(t *testing.T) {
 	resetCmdFlags(t)
 
-	flagOutput = "json"
-
 	out := captureStderr(t, func() {
-		rootCmd.SetArgs([]string{"watch", "--", "cubes"})
+		rootCmd.SetArgs([]string{"watch", "--output", "json", "--", "cubes"})
 		rootCmd.Execute()
 	})
 
