@@ -8,6 +8,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func intPtr(v int) *int { return &v }
+
 func sampleProcessDetail() ProcessDetail {
 	return ProcessDetail{
 		Name:              "LoadData",
@@ -24,7 +26,7 @@ func sampleProcessDetail() ProcessDetail {
 			AsciiDecimalSeparator:   ".",
 			AsciiDelimiterChar:      ",",
 			AsciiDelimiterType:      "Character",
-			AsciiHeaderRecords:      1,
+			AsciiHeaderRecords:      intPtr(1),
 			DataSourceNameForServer: "/data/input.csv",
 		},
 		Variables: []ProcessVariable{
@@ -231,7 +233,7 @@ func TestProcessDataSourceJSON_Omitempty(t *testing.T) {
 		ds := ProcessDataSource{
 			Type:               "ASCII",
 			AsciiDelimiterChar: ",",
-			AsciiHeaderRecords: 1,
+			AsciiHeaderRecords: intPtr(1),
 		}
 		data, err := json.Marshal(ds)
 		if err != nil {

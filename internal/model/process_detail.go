@@ -26,7 +26,7 @@ type ProcessDataSource struct {
 	AsciiDecimalSeparator   string `json:"asciiDecimalSeparator,omitempty" yaml:"ascii_decimal_separator,omitempty"`
 	AsciiDelimiterChar      string `json:"asciiDelimiterChar,omitempty" yaml:"ascii_delimiter_char,omitempty"`
 	AsciiDelimiterType      string `json:"asciiDelimiterType,omitempty" yaml:"ascii_delimiter_type,omitempty"`
-	AsciiHeaderRecords      int    `json:"asciiHeaderRecords,omitempty" yaml:"ascii_header_records,omitempty"`
+	AsciiHeaderRecords      *int   `json:"asciiHeaderRecords,omitempty" yaml:"ascii_header_records,omitempty"`
 	AsciiQuoteCharacter     string `json:"asciiQuoteCharacter,omitempty" yaml:"ascii_quote_character,omitempty"`
 	AsciiThousandSeparator  string `json:"asciiThousandSeparator,omitempty" yaml:"ascii_thousand_separator,omitempty"`
 	DataSourceNameForClient string `json:"dataSourceNameForClient,omitempty" yaml:"data_source_name_for_client,omitempty"`

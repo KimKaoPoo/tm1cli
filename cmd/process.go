@@ -319,7 +319,7 @@ func runProcessDump(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	endpoint := fmt.Sprintf("Processes('%s')?$select=Name,PrologProcedure,MetadataProcedure,DataProcedure,EpilogProcedure,Parameters,DataSource,Variables",
+	endpoint := fmt.Sprintf("Processes('%s')?$expand=Parameters,Variables&$select=Name,PrologProcedure,MetadataProcedure,DataProcedure,EpilogProcedure,DataSource",
 		url.PathEscape(processName))
 
 	data, err := cl.Get(endpoint)
