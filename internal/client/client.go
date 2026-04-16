@@ -154,21 +154,22 @@ func (c *Client) Delete(endpoint string) error {
 	return err
 }
 
-func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, int, error) {
+func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, error) {
 	url := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
 	var bodyReader io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
 		if err != nil {
-			return nil, 0, fmt.Errorf("cannot marshal request body: %w", err)
+			return nil, fmt.Errorf("cannot marshal request body: %w", err)
 		}
 		bodyReader = bytes.NewReader(data)
 	}
 	req, err := http.NewRequest("PATCH", url, bodyReader)
 	if err != nil {
-		return nil, 0, fmt.Errorf("cannot create request: %w", err)
+		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
-	return c.do(req)
+	body, _, err := c.do(req)
+	return body, err
 }
 
 func (c *Client) wrapError(err error) error {

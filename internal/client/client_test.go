@@ -326,51 +326,45 @@ func TestDelete(t *testing.T) {
 }
 
 func TestPatch(t *testing.T) {
-	payload := map[string]string{"Name": "TestProcess"}
-
 	tests := []struct {
 		name        string
+		payload     interface{}
 		handler     http.HandlerFunc
-		wantStatus  int
-		wantBody    string
 		wantErr     bool
 		errContains string
+		wantBody    string
 	}{
 		{
-			name: "successful PATCH returns body",
+			name:    "successful PATCH with body",
+			payload: map[string]interface{}{"Name": "TestProcess"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"Name":"TestProcess"}`))
-			},
-			wantStatus: http.StatusOK,
-			wantBody:   `{"Name":"TestProcess"}`,
-		},
-		{
-			name: "successful PATCH no content",
-			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "PATCH" {
+					t.Errorf("method = %q, want PATCH", r.Method)
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", r.Header.Get("Content-Type"))
+				}
 				w.WriteHeader(http.StatusNoContent)
 			},
-			wantStatus: http.StatusNoContent,
-			wantBody:   "",
+			wantBody: "",
 		},
 		{
-			name: "404 returns not found",
+			name:    "PATCH 404 returns not found",
+			payload: map[string]interface{}{"Name": "Missing"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 				w.Write([]byte(`Not found`))
 			},
-			wantStatus:  http.StatusNotFound,
 			wantErr:     true,
 			errContains: "Not found",
 		},
 		{
-			name: "500 returns server error",
+			name:    "PATCH 500 returns HTTP error",
+			payload: map[string]interface{}{"Name": "Broken"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`Internal Server Error`))
+				w.Write([]byte(`Server error`))
 			},
-			wantStatus:  http.StatusInternalServerError,
 			wantErr:     true,
 			errContains: "HTTP 500",
 		},
@@ -382,7 +376,7 @@ func TestPatch(t *testing.T) {
 			defer ts.Close()
 
 			c := newTestClient(t, ts.URL)
-			body, status, err := c.Patch("Processes('test')", payload)
+			body, err := c.Patch("Processes('test')", tt.payload)
 
 			if tt.wantErr {
 				if err == nil {
@@ -391,16 +385,10 @@ func TestPatch(t *testing.T) {
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContains)
 				}
-				if status != tt.wantStatus {
-					t.Errorf("status = %d, want %d", status, tt.wantStatus)
-				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
-			}
-			if status != tt.wantStatus {
-				t.Errorf("status = %d, want %d", status, tt.wantStatus)
 			}
 			if string(body) != tt.wantBody {
 				t.Errorf("body = %q, want %q", string(body), tt.wantBody)
@@ -418,7 +406,7 @@ func TestPatchSendsCorrectMethod(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts.URL)
-	_, _, _ = c.Patch("Processes('test')", nil)
+	_, _ = c.Patch("Processes('test')", nil)
 
 	if capturedMethod != "PATCH" {
 		t.Errorf("method = %q, want PATCH", capturedMethod)
@@ -436,7 +424,7 @@ func TestPatchSendsBody(t *testing.T) {
 
 	c := newTestClient(t, ts.URL)
 	payload := map[string]string{"Name": "MyProcess"}
-	_, _, _ = c.Patch("Processes('test')", payload)
+	_, _ = c.Patch("Processes('test')", payload)
 
 	if !strings.Contains(capturedBody, "MyProcess") {
 		t.Errorf("request body = %q, want it to contain 'MyProcess'", capturedBody)
