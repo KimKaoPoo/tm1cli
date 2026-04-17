@@ -1495,6 +1495,71 @@ func TestConfigAddKeychain(t *testing.T) {
 			t.Errorf("decoded password = %q, %v; want 'fallback-secret', nil", decoded, err)
 		}
 	})
+
+	t.Run("rolls back keychain entry when config save fails", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		// Capture refs passed to keychainSet so we can verify cleanup.
+		var capturedRef string
+		restoreSet := config.OverrideKeychainSet(func(service, user, password string) error {
+			capturedRef = user
+			return nil // keychain write succeeds
+		})
+		defer restoreSet()
+
+		var deletedRef string
+		restoreDel := config.OverrideKeychainDelete(func(service, user string) error {
+			deletedRef = user
+			return nil
+		})
+		defer restoreDel()
+
+		// Setup: seed an empty config file, then make the config dir
+		// read-only so Save's overwrite fails while Load still succeeds.
+		// This exercises the rollback branch in runConfigAdd where the
+		// keychain write succeeds but the subsequent Save call errors.
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", tmpDir)
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		if err := os.MkdirAll(cfgDir, 0700); err != nil {
+			t.Fatalf("setup mkdir: %v", err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		if err := os.WriteFile(cfgPath,
+			[]byte(`{"default":"","servers":{},"settings":{"default_limit":50,"output_format":"table"}}`),
+			0600); err != nil {
+			t.Fatalf("setup write: %v", err)
+		}
+		// Make the config file read-only so Save's truncate-write fails.
+		if err := os.Chmod(cfgPath, 0400); err != nil {
+			t.Fatalf("setup chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfgPath, 0600) })
+
+		defer saveAddFlags()()
+		addFlagURL = ts.URL
+		addFlagUser = "admin"
+		addFlagPassword = "rollback-secret"
+		addFlagAuth = "basic"
+
+		err := runConfigAdd(configAddCmd, []string{"rb-test"})
+		if err == nil {
+			t.Fatal("expected save to fail, got nil error")
+		}
+		if capturedRef == "" {
+			t.Fatal("keychain write was never attempted")
+		}
+		if deletedRef != capturedRef {
+			t.Errorf("rollback ref = %q, want %q (same as written)", deletedRef, capturedRef)
+		}
+	})
 }
 
 func TestConfigEditKeychain(t *testing.T) {

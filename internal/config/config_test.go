@@ -965,11 +965,9 @@ func TestStorePassword_UsesKeychainWhenAvailable(t *testing.T) {
 }
 
 func TestStorePassword_FallsBackToBase64OnKeychainFailure(t *testing.T) {
-	oldSet := keychainSet
-	t.Cleanup(func() { keychainSet = oldSet })
-	keychainSet = func(service, user, password string) error {
+	t.Cleanup(OverrideKeychainSet(func(service, user, password string) error {
 		return errors.New("simulated keychain failure")
-	}
+	}))
 	srv := &ServerConfig{}
 	used, warning := StorePassword(srv, "hunter2")
 	if used {

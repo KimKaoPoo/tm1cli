@@ -173,6 +173,9 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	cfg.AddServer(name, srv)
 
 	if err := config.Save(cfg); err != nil {
+		// Roll back the keychain write so we don't leak an orphaned secret
+		// that no config entry points to. Best-effort.
+		_ = config.ClearStoredPassword(&srv)
 		return fmt.Errorf("cannot save config: %w", err)
 	}
 

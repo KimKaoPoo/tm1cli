@@ -212,7 +212,8 @@ tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without he
 - [x] v0.1.0 — Config, cubes, dims, members, process list/run, export view → table
 - [x] v0.1.1 — Export view → CSV/JSON file
 - [ ] v0.2.0 — MDX export, XLSX output, config edit, CAM auth testing
-- [ ] v0.3.0 — OS keychain, tab completion, advanced features
+- [ ] v0.3.0 — tab completion, advanced features
+- [ ] v0.4.0 — OS keychain password storage
 
 ## License
 
