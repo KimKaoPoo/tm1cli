@@ -141,7 +141,13 @@ tm1cli config settings --limit 100  # change defaults
 
 ### Password Security
 
-Passwords are stored base64-encoded in the config file (obfuscation only, not encryption). For better security, use the `TM1CLI_PASSWORD` environment variable instead of storing passwords.
+Passwords are stored in the OS keychain (macOS Keychain, Linux secret-service/libsecret, Windows Credential Manager). If the keychain is unavailable (e.g., headless Linux without D-Bus), tm1cli falls back to base64-encoded storage in the config file and prints a warning — base64 is obfuscation only, not encryption.
+
+For CI/CD or headless environments, prefer the `TM1CLI_PASSWORD` environment variable.
+
+**Config file portability:** The `password_ref` in the config file is a machine-local keychain lookup key. Copying `~/.tm1cli/config.json` to another machine will not copy the passwords — re-enter them there via `tm1cli config edit <name>`. Keychain entries are scoped to the OS user account.
+
+**Migrating existing base64 passwords:** Existing configs with base64-stored passwords continue to work unchanged. To move an individual connection into the keychain, run `tm1cli config edit <name>` and re-enter your password at the prompt.
 
 ## Usage
 
