@@ -56,7 +56,7 @@ For CI/CD, prefer the TM1CLI_PASSWORD environment variable.`,
   # with flags
   tm1cli config add myserver --url https://host:8010/api/v1 --user myuser --auth basic
 
-  # with env var for password (no storage)
+  # with env var as the password source (still persisted to keychain/config on add)
   export TM1CLI_PASSWORD=mysecret
   tm1cli config add myserver --url https://host:8010/api/v1 --user myuser --auth basic`,
 	Args: cobra.MaximumNArgs(1),
@@ -378,7 +378,42 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot read password: %w", err)
 	}
 
+	// Resolve the plaintext password for the connection test WITHOUT
+	// touching the keychain yet. Mutating the keychain before the test
+	// would desync the stored credential from the on-disk config if the
+	// user aborts ("Save anyway? n") or the subsequent Save fails.
 	password := ""
+	if newPassword != "" {
+		password = newPassword
+	} else if envPass := os.Getenv("TM1CLI_PASSWORD"); envPass != "" {
+		password = envPass
+	} else {
+		existing, err := cfg.GetEffectivePassword(name)
+		if err != nil {
+			return fmt.Errorf("cannot retrieve stored password: %w", err)
+		}
+		password = existing
+	}
+
+	// Test connection with the plaintext. srv.Password / PasswordStorage
+	// are still the original values from the loaded config at this point.
+	if !testConnection(reader, srv, password, cfg.Settings.TLSVerify) {
+		return nil
+	}
+
+	// Snapshot the pre-write state so we can roll back if Save fails.
+	// For an overwrite of an existing keychain entry, capture the old
+	// plaintext so we can restore it; StorePassword will otherwise
+	// overwrite in place under the same PasswordRef.
+	origSrv := srv
+	origPlaintext := ""
+	if newPassword != "" && origSrv.PasswordStorage == config.PasswordStorageKeychain && origSrv.PasswordRef != "" {
+		origPlaintext, _ = config.GetKeychainPassword(origSrv.PasswordRef)
+	}
+
+	// Test passed (or user chose save-anyway). Now persist the new password
+	// — only for the new-password branch. Blank input preserves existing
+	// storage; env-var input is a one-off override that should not be stored.
 	if newPassword != "" {
 		usedKeychain, warning := config.StorePassword(&srv, newPassword)
 		if warning != "" {
@@ -387,26 +422,24 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 		if usedKeychain {
 			fmt.Println("Password stored in OS keychain.")
 		}
-		password = newPassword
-	} else if envPass := os.Getenv("TM1CLI_PASSWORD"); envPass != "" {
-		password = envPass
-	} else {
-		// Preserve existing password via whichever storage it uses.
-		existing, err := cfg.GetEffectivePassword(name)
-		if err != nil {
-			return fmt.Errorf("cannot retrieve stored password: %w", err)
-		}
-		password = existing
-	}
-
-	// Test connection
-	if !testConnection(reader, srv, password, cfg.Settings.TLSVerify) {
-		return nil
 	}
 
 	cfg.Servers[name] = srv
 
 	if err := config.Save(cfg); err != nil {
+		// Roll back the keychain write so the OS keychain matches the
+		// unchanged on-disk config. Best-effort.
+		if newPassword != "" {
+			switch {
+			case origSrv.PasswordStorage != config.PasswordStorageKeychain &&
+				srv.PasswordStorage == config.PasswordStorageKeychain:
+				// base64 → keychain migration that was about to commit: drop the new entry.
+				_ = config.ClearStoredPassword(&srv)
+			case origPlaintext != "" && srv.PasswordStorage == config.PasswordStorageKeychain && srv.PasswordRef == origSrv.PasswordRef:
+				// Overwrote an existing keychain entry: restore the previous plaintext.
+				_ = config.SetKeychainPassword(srv.PasswordRef, origPlaintext)
+			}
+		}
 		return fmt.Errorf("cannot save config: %w", err)
 	}
 

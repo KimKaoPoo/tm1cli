@@ -988,6 +988,34 @@ func TestStorePassword_FallsBackToBase64OnKeychainFailure(t *testing.T) {
 	}
 }
 
+func TestStorePassword_FallbackCleansUpOldKeychainEntry(t *testing.T) {
+	keyring.MockInit()
+	// Seed an existing keychain-backed server.
+	oldRef := "orphan-candidate"
+	if err := SetKeychainPassword(oldRef, "oldpw"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srv := &ServerConfig{PasswordStorage: PasswordStorageKeychain, PasswordRef: oldRef}
+
+	// Inject a keychain failure so StorePassword falls back to base64.
+	t.Cleanup(OverrideKeychainSet(func(service, user, password string) error {
+		return errors.New("simulated keychain failure")
+	}))
+
+	used, _ := StorePassword(srv, "newpw")
+	if used {
+		t.Fatalf("used = true, want false (fallback expected)")
+	}
+
+	// Restore the real Set so we can verify the old entry is gone.
+	// OverrideKeychainSet's cleanup runs after this test, but we need
+	// the real Get semantics now. Since the mock keeps its own map and
+	// only Set was overridden, Get still works against the mock map.
+	if _, err := GetKeychainPassword(oldRef); !errors.Is(err, ErrKeychainNotFound) {
+		t.Errorf("old keychain entry should have been deleted after fallback, err = %v", err)
+	}
+}
+
 func TestGetEffectivePassword_KeychainStorage(t *testing.T) {
 	keyring.MockInit()
 	ref := "test-ref-123"

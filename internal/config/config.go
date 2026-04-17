@@ -217,6 +217,12 @@ func StorePassword(srv *ServerConfig, password string) (usedKeychain bool, warni
 		srv.PasswordRef = ref
 		return true, ""
 	}
+	// Keychain write failed — clean up any pre-existing keychain entry for
+	// this server so it doesn't linger as an orphan after we switch to
+	// base64 storage. Best-effort: the keychain may still be unreachable.
+	if srv.PasswordStorage == PasswordStorageKeychain && srv.PasswordRef != "" {
+		_ = DeleteKeychainPassword(srv.PasswordRef)
+	}
 	srv.Password = EncodePassword(password)
 	srv.PasswordStorage = PasswordStorageBase64
 	srv.PasswordRef = ""
