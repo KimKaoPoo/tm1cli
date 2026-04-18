@@ -200,6 +200,18 @@ tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without he
 --version         Print version
 ```
 
+### Shell Completion
+
+Generate a completion script for your shell. Run
+`tm1cli completion <shell> --help` for the install steps.
+
+```bash
+tm1cli completion bash       # bash
+tm1cli completion zsh        # zsh
+tm1cli completion fish       # fish
+tm1cli completion powershell # PowerShell
+```
+
 ## Auth Modes
 
 | Mode | TM1 Security Mode | Usage |
@@ -211,9 +223,10 @@ tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without he
 
 - [x] v0.1.0 — Config, cubes, dims, members, process list/run, export view → table
 - [x] v0.1.1 — Export view → CSV/JSON file
-- [ ] v0.2.0 — MDX export, XLSX output, config edit, CAM auth testing
-- [ ] v0.3.0 — tab completion, advanced features
-- [ ] v0.4.0 — OS keychain password storage
+- [x] v0.1.2 — Bug fixes for export and URL handling
+- [x] v0.2.0 — MDX export, XLSX output, config edit, views, subsets, diagnostics
+- [x] v0.3.0 — Process dump/load, watch mode
+- [ ] v0.4.0 — OS keychain password storage, consolidated member indentation, cellset parsing
 
 ## License
 
