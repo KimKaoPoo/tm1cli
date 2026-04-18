@@ -179,7 +179,11 @@ Use --hierarchy for alternate hierarchies.
 Output is indented by default to show hierarchy: children of consolidated
 elements are indented two spaces per level. Use --flat for a single-level
 list. Indentation is disabled automatically with --filter, --count, and
---output json.`,
+--output json.
+
+Tree mode fetches the full hierarchy so indentation stays intact; on very
+large dimensions (>5000 elements) a stderr warning is emitted recommending
+--flat for faster queries.`,
 	Example: `  tm1cli dims members Period
   tm1cli dims members Period --flat
   tm1cli dims members Region --hierarchy "Alternate Region"
@@ -259,9 +263,15 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		elements = filterElementsByName(elements, membersFilter)
 	}
 
+	if treeMode && len(elements) > treeWarnThreshold {
+		output.PrintWarning(fmt.Sprintf("Fetched %d elements; use --flat for faster queries on large dimensions.", len(elements)))
+	}
+
 	displayMembers(elements, len(elements), limit, jsonMode, treeMode)
 	return nil
 }
+
+const treeWarnThreshold = 5000
 
 func filterElementsByName(elements []model.Element, filter string) []model.Element {
 	lower := strings.ToLower(filter)

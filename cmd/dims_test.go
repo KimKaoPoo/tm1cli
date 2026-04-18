@@ -1109,6 +1109,92 @@ func TestRunDimsMembers_CountSkipsExpand(t *testing.T) {
 	}
 }
 
+func TestRunDimsMembers_TreeModeWarnsOnLargeFetch(t *testing.T) {
+	resetCmdFlags(t)
+
+	names := make([]string, treeWarnThreshold+1)
+	types := make([]string, treeWarnThreshold+1)
+	for i := range names {
+		names[i] = fmt.Sprintf("Elem%d", i)
+		types[i] = "Numeric"
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(names, types, nil))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("expected warning for oversize tree fetch, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "--flat") {
+		t.Errorf("warning should mention --flat, got stderr: %q", captured.Stderr)
+	}
+	wantCount := fmt.Sprintf("%d", treeWarnThreshold+1)
+	if !strings.Contains(captured.Stderr, wantCount) {
+		t.Errorf("warning should include element count %s, got stderr: %q", wantCount, captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_TreeModeQuietBelowThreshold(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(
+			[]string{"Year", "Q1"},
+			[]string{"Consolidated", "Numeric"},
+			map[string][]string{"Year": {"Q1"}},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Small"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(captured.Stderr, "Fetched") {
+		t.Errorf("small dimensions should not emit fetch-size warning, got stderr: %q", captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_FlatModeNeverWarnsOnSize(t *testing.T) {
+	resetCmdFlags(t)
+	membersFlat = true
+
+	names := make([]string, treeWarnThreshold+1)
+	types := make([]string, treeWarnThreshold+1)
+	for i := range names {
+		names[i] = fmt.Sprintf("Elem%d", i)
+		types[i] = "Numeric"
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(names, types))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(captured.Stderr, "Fetched") {
+		t.Errorf("--flat should never emit fetch-size warning, got stderr: %q", captured.Stderr)
+	}
+}
+
 func TestRunDimsMembers_TreeModeOmitsTop(t *testing.T) {
 	resetCmdFlags(t)
 	membersLimit = 10
