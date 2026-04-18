@@ -161,6 +161,7 @@ var (
 	membersLimit     int
 	membersAll       bool
 	membersCount     bool
+	membersFlat      bool
 )
 
 var dimsMembersCmd = &cobra.Command{
@@ -173,8 +174,14 @@ Equivalent to: Dimension Editor in TM1 Architect
 REST API:      GET /Dimensions('name')/Hierarchies('name')/Elements
 
 By default uses the dimension's same-named hierarchy.
-Use --hierarchy for alternate hierarchies.`,
+Use --hierarchy for alternate hierarchies.
+
+Output is indented by default to show hierarchy: children of consolidated
+elements are indented two spaces per level. Use --flat for a single-level
+list. Indentation is disabled automatically with --filter, --count, and
+--output json.`,
 	Example: `  tm1cli dims members Period
+  tm1cli dims members Period --flat
   tm1cli dims members Region --hierarchy "Alternate Region"
   tm1cli dims members Period --filter "Q"
   tm1cli dims members Account --output json`,
@@ -205,7 +212,12 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		hierarchy = dimName
 	}
 
+	treeMode := !jsonMode && !membersCount && !membersFlat && membersFilter == ""
+
 	endpoint := fmt.Sprintf("Dimensions('%s')/Hierarchies('%s')/Elements?$select=Name,Type", url.PathEscape(dimName), url.PathEscape(hierarchy))
+	if treeMode {
+		endpoint += "&$expand=Components($select=Name)"
+	}
 
 	// Try server-side filter
 	filterFallback := false
@@ -216,7 +228,7 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		if err == nil {
 			var resp model.ElementResponse
 			if jsonErr := json.Unmarshal(data, &resp); jsonErr == nil {
-				displayMembers(resp.Value, len(resp.Value), limit, jsonMode)
+				displayMembers(resp.Value, len(resp.Value), limit, jsonMode, treeMode)
 				return nil
 			}
 		}
@@ -225,7 +237,7 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 	}
 
 	fetchEndpoint := endpoint
-	if limit > 0 && membersFilter == "" {
+	if limit > 0 && membersFilter == "" && !treeMode {
 		fetchEndpoint += fmt.Sprintf("&$top=%d", limit)
 	}
 
@@ -247,7 +259,7 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		elements = filterElementsByName(elements, membersFilter)
 	}
 
-	displayMembers(elements, len(elements), limit, jsonMode)
+	displayMembers(elements, len(elements), limit, jsonMode, treeMode)
 	return nil
 }
 
@@ -262,7 +274,7 @@ func filterElementsByName(elements []model.Element, filter string) []model.Eleme
 	return filtered
 }
 
-func displayMembers(elements []model.Element, total int, limit int, jsonMode bool) {
+func displayMembers(elements []model.Element, total int, limit int, jsonMode bool, treeMode bool) {
 	if membersCount {
 		if jsonMode {
 			output.PrintJSON(map[string]int{"count": total})
@@ -272,23 +284,123 @@ func displayMembers(elements []model.Element, total int, limit int, jsonMode boo
 		return
 	}
 
-	shown := elements
-	if limit > 0 && len(shown) > limit {
-		shown = shown[:limit]
-	}
-
 	if jsonMode {
+		shown := elements
+		if limit > 0 && len(shown) > limit {
+			shown = shown[:limit]
+		}
 		output.PrintJSON(shown)
 		return
 	}
 
 	headers := []string{"NAME", "TYPE"}
+
+	if treeMode {
+		flat := flattenTree(buildTree(elements))
+		flatTotal := len(flat)
+		shown := flat
+		if limit > 0 && len(shown) > limit {
+			shown = shown[:limit]
+		}
+		rows := make([][]string, len(shown))
+		for i, r := range shown {
+			rows[i] = []string{strings.Repeat("  ", r.depth) + r.name, r.elType}
+		}
+		output.PrintTable(headers, rows)
+		output.PrintSummary(len(shown), flatTotal)
+		return
+	}
+
+	shown := elements
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
 	rows := make([][]string, len(shown))
 	for i, e := range shown {
 		rows[i] = []string{e.Name, e.Type}
 	}
 	output.PrintTable(headers, rows)
 	output.PrintSummary(len(shown), total)
+}
+
+// --- hierarchy tree (indentation) ---
+
+type treeNode struct {
+	elem     *model.Element
+	children []*treeNode
+}
+
+type indentedRow struct {
+	depth  int
+	name   string
+	elType string
+}
+
+// buildTree turns a flat element list (with populated Components) into a
+// forest. Natural roots are elements that never appear as a child; a second
+// pass adds synthetic roots for residual or cycle-only subgraphs so no
+// element disappears from the output.
+func buildTree(elements []model.Element) []*treeNode {
+	byName := make(map[string]*model.Element, len(elements))
+	for i := range elements {
+		byName[elements[i].Name] = &elements[i]
+	}
+	childOf := make(map[string]bool)
+	for _, e := range elements {
+		for _, c := range e.Components {
+			childOf[c.Name] = true
+		}
+	}
+
+	visitedAll := make(map[string]bool)
+	var roots []*treeNode
+
+	for i := range elements {
+		name := elements[i].Name
+		if !childOf[name] && !visitedAll[name] {
+			roots = append(roots, buildNode(&elements[i], byName, visitedAll, map[string]bool{}))
+		}
+	}
+	for i := range elements {
+		if !visitedAll[elements[i].Name] {
+			roots = append(roots, buildNode(&elements[i], byName, visitedAll, map[string]bool{}))
+		}
+	}
+	return roots
+}
+
+func buildNode(e *model.Element, byName map[string]*model.Element, visitedAll, visitedPath map[string]bool) *treeNode {
+	if visitedPath[e.Name] {
+		return &treeNode{elem: e}
+	}
+	visitedPath[e.Name] = true
+	visitedAll[e.Name] = true
+	defer delete(visitedPath, e.Name)
+
+	node := &treeNode{elem: e}
+	for _, c := range e.Components {
+		child, ok := byName[c.Name]
+		if !ok {
+			continue
+		}
+		node.children = append(node.children, buildNode(child, byName, visitedAll, visitedPath))
+	}
+	return node
+}
+
+func flattenTree(roots []*treeNode) []indentedRow {
+	var out []indentedRow
+	var dfs func(*treeNode, int)
+	dfs = func(n *treeNode, d int) {
+		out = append(out, indentedRow{depth: d, name: n.elem.Name, elType: n.elem.Type})
+		for _, c := range n.children {
+			dfs(c, d+1)
+		}
+	}
+	for _, r := range roots {
+		dfs(r, 0)
+	}
+	return out
 }
 
 func init() {
@@ -306,4 +418,5 @@ func init() {
 	dimsMembersCmd.Flags().IntVar(&membersLimit, "limit", 0, "Max results to show (default from settings)")
 	dimsMembersCmd.Flags().BoolVar(&membersAll, "all", false, "Show all members, no limit")
 	dimsMembersCmd.Flags().BoolVar(&membersCount, "count", false, "Show count only")
+	dimsMembersCmd.Flags().BoolVar(&membersFlat, "flat", false, "Disable hierarchy indentation (default indents consolidated children)")
 }
