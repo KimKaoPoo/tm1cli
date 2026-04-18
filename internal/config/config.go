@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,14 +20,19 @@ const (
 	SourceEnv    = "env"
 	SourceLocal  = "local"
 	SourceGlobal = "global"
+
+	PasswordStorageBase64   = "base64"
+	PasswordStorageKeychain = "keychain"
 )
 
 type ServerConfig struct {
-	URL       string `json:"url"`
-	User      string `json:"user"`
-	Password  string `json:"password"`
-	AuthMode  string `json:"auth_mode"`
-	Namespace string `json:"namespace,omitempty"`
+	URL             string `json:"url"`
+	User            string `json:"user"`
+	Password        string `json:"password"`                    // set when storage is "" or "base64"
+	PasswordStorage string `json:"password_storage,omitempty"` // "", "base64", or "keychain"
+	PasswordRef     string `json:"password_ref,omitempty"`     // keychain account (random 128-bit hex)
+	AuthMode        string `json:"auth_mode"`
+	Namespace       string `json:"namespace,omitempty"`
 }
 
 type Settings struct {
@@ -188,6 +196,48 @@ func DecodePassword(encoded string) (string, error) {
 	return string(data), nil
 }
 
+func newPasswordRef() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// StorePassword tries to store the password in the OS keychain; falls back to base64.
+// Mutates srv fields (Password, PasswordStorage, PasswordRef).
+// Returns usedKeychain and a warning string (empty if keychain succeeded).
+func StorePassword(srv *ServerConfig, password string) (usedKeychain bool, warning string) {
+	ref := srv.PasswordRef
+	if ref == "" {
+		ref = newPasswordRef()
+	}
+	err := SetKeychainPassword(ref, password)
+	if err == nil {
+		srv.Password = ""
+		srv.PasswordStorage = PasswordStorageKeychain
+		srv.PasswordRef = ref
+		return true, ""
+	}
+	// Keychain write failed — clean up any pre-existing keychain entry for
+	// this server so it doesn't linger as an orphan after we switch to
+	// base64 storage. Best-effort: the keychain may still be unreachable.
+	if srv.PasswordStorage == PasswordStorageKeychain && srv.PasswordRef != "" {
+		_ = DeleteKeychainPassword(srv.PasswordRef)
+	}
+	srv.Password = EncodePassword(password)
+	srv.PasswordStorage = PasswordStorageBase64
+	srv.PasswordRef = ""
+	return false, fmt.Sprintf("keychain unavailable (%v), password stored base64-encoded in config file", err)
+}
+
+// ClearStoredPassword removes the keychain entry if the server uses keychain storage.
+// No-op for base64 storage.
+func ClearStoredPassword(srv *ServerConfig) error {
+	if srv.PasswordStorage == PasswordStorageKeychain && srv.PasswordRef != "" {
+		return DeleteKeychainPassword(srv.PasswordRef)
+	}
+	return nil
+}
+
 func (c *Config) GetServer(name string) (*ServerConfig, error) {
 	if name == "" {
 		name = c.Default
@@ -206,9 +256,25 @@ func (c *Config) GetEffectivePassword(serverName string) (string, error) {
 	if envPass := os.Getenv("TM1CLI_PASSWORD"); envPass != "" {
 		return envPass, nil
 	}
+	if serverName == "" {
+		serverName = c.Default
+	}
 	srv, err := c.GetServer(serverName)
 	if err != nil {
 		return "", err
+	}
+	if srv.PasswordStorage == PasswordStorageKeychain {
+		if srv.PasswordRef == "" {
+			return "", fmt.Errorf("server '%s' marked as keychain-stored but has no credential reference; run 'tm1cli config edit %s' to re-enter", serverName, serverName)
+		}
+		pw, err := GetKeychainPassword(srv.PasswordRef)
+		if errors.Is(err, ErrKeychainNotFound) {
+			return "", fmt.Errorf("password for '%s' not found in OS keychain. Run 'tm1cli config edit %s' to re-enter", serverName, serverName)
+		}
+		if err != nil {
+			return "", fmt.Errorf("cannot read password from keychain for '%s': %w", serverName, err)
+		}
+		return pw, nil
 	}
 	return DecodePassword(srv.Password)
 }

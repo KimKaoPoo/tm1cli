@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"tm1cli/internal/config"
+
+	"github.com/zalando/go-keyring"
 )
 
 // setupTestHome creates a temp directory, sets HOME, and optionally writes a config file.
@@ -755,9 +758,12 @@ func TestConfigEdit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cannot load config: %v", err)
 		}
-		decoded, _ := config.DecodePassword(saved.Servers["myserver"].Password)
-		if decoded != "newpass" {
-			t.Errorf("password = %q, want 'newpass'", decoded)
+		got, err := saved.GetEffectivePassword("myserver")
+		if err != nil {
+			t.Fatalf("cannot retrieve effective password: %v", err)
+		}
+		if got != "newpass" {
+			t.Errorf("password = %q, want 'newpass'", got)
 		}
 	})
 
@@ -1331,7 +1337,7 @@ func TestConfigAdd(t *testing.T) {
 		}
 	})
 
-	t.Run("password stored base64-encoded", func(t *testing.T) {
+	t.Run("password stored and retrievable", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"value":[]}`))
@@ -1355,13 +1361,12 @@ func TestConfigAdd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cannot load config: %v", err)
 		}
-		srv := cfg.Servers["pw-test"]
-		decoded, err := config.DecodePassword(srv.Password)
+		got, err := cfg.GetEffectivePassword("pw-test")
 		if err != nil {
-			t.Fatalf("cannot decode password: %v", err)
+			t.Fatalf("cannot retrieve effective password: %v", err)
 		}
-		if decoded != "my$ecret!123" {
-			t.Errorf("decoded password = %q, want %q", decoded, "my$ecret!123")
+		if got != "my$ecret!123" {
+			t.Errorf("password = %q, want %q", got, "my$ecret!123")
 		}
 	})
 
@@ -1390,13 +1395,527 @@ func TestConfigAdd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cannot load config: %v", err)
 		}
-		srv := cfg.Servers["env-test"]
-		decoded, err := config.DecodePassword(srv.Password)
+		// Env var is used at add-time for the password value stored in keychain/base64.
+		// Since TM1CLI_PASSWORD is still set here, GetEffectivePassword returns the env
+		// var directly, which matches. Unset the env var to verify the stored value.
+		os.Unsetenv("TM1CLI_PASSWORD")
+		got, err := cfg.GetEffectivePassword("env-test")
 		if err != nil {
-			t.Fatalf("cannot decode password: %v", err)
+			t.Fatalf("cannot retrieve effective password: %v", err)
 		}
-		if decoded != "env-password" {
-			t.Errorf("decoded password = %q, want %q", decoded, "env-password")
+		if got != "env-password" {
+			t.Errorf("password = %q, want %q", got, "env-password")
+		}
+	})
+}
+
+// --- keychain-specific integration tests ---
+
+func TestConfigAddKeychain(t *testing.T) {
+	t.Run("writes to keychain when available", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		setupTestHome(t, nil)
+		defer saveAddFlags()()
+		addFlagURL = ts.URL
+		addFlagUser = "admin"
+		addFlagPassword = "kc-secret"
+		addFlagAuth = "basic"
+
+		captureStdout(t, func() {
+			if err := runConfigAdd(configAddCmd, []string{"kc-test"}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := cfg.Servers["kc-test"]
+		if srv.PasswordStorage != config.PasswordStorageKeychain {
+			t.Errorf("PasswordStorage = %q, want %q", srv.PasswordStorage, config.PasswordStorageKeychain)
+		}
+		if srv.Password != "" {
+			t.Errorf("Password field should be empty when keychain is used, got %q", srv.Password)
+		}
+		if srv.PasswordRef == "" {
+			t.Error("PasswordRef should be set when keychain is used")
+		}
+		kcValue, err := config.GetKeychainPassword(srv.PasswordRef)
+		if err != nil || kcValue != "kc-secret" {
+			t.Errorf("keychain value = %q, %v; want 'kc-secret', nil", kcValue, err)
+		}
+	})
+
+	t.Run("falls back to base64 when keychain unavailable", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		restore := config.OverrideKeychainSet(func(service, user, password string) error {
+			return fmt.Errorf("simulated keychain failure")
+		})
+		defer restore()
+
+		setupTestHome(t, nil)
+		defer saveAddFlags()()
+		addFlagURL = ts.URL
+		addFlagUser = "admin"
+		addFlagPassword = "fallback-secret"
+		addFlagAuth = "basic"
+
+		captured := captureAll(t, func() {
+			if err := runConfigAdd(configAddCmd, []string{"fb-test"}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+
+		if !strings.Contains(captured.Stderr, "keychain unavailable") {
+			t.Errorf("stderr should warn about keychain failure, got: %q", captured.Stderr)
+		}
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := cfg.Servers["fb-test"]
+		if srv.PasswordStorage != config.PasswordStorageBase64 {
+			t.Errorf("PasswordStorage = %q, want %q", srv.PasswordStorage, config.PasswordStorageBase64)
+		}
+		if srv.PasswordRef != "" {
+			t.Errorf("PasswordRef should be empty on base64 fallback, got %q", srv.PasswordRef)
+		}
+		decoded, err := config.DecodePassword(srv.Password)
+		if err != nil || decoded != "fallback-secret" {
+			t.Errorf("decoded password = %q, %v; want 'fallback-secret', nil", decoded, err)
+		}
+	})
+
+	t.Run("rolls back keychain entry when config save fails", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		// Capture refs passed to keychainSet so we can verify cleanup.
+		var capturedRef string
+		restoreSet := config.OverrideKeychainSet(func(service, user, password string) error {
+			capturedRef = user
+			return nil // keychain write succeeds
+		})
+		defer restoreSet()
+
+		var deletedRef string
+		restoreDel := config.OverrideKeychainDelete(func(service, user string) error {
+			deletedRef = user
+			return nil
+		})
+		defer restoreDel()
+
+		// Setup: seed an empty config file, then make the config dir
+		// read-only so Save's overwrite fails while Load still succeeds.
+		// This exercises the rollback branch in runConfigAdd where the
+		// keychain write succeeds but the subsequent Save call errors.
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", tmpDir)
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		if err := os.MkdirAll(cfgDir, 0700); err != nil {
+			t.Fatalf("setup mkdir: %v", err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		if err := os.WriteFile(cfgPath,
+			[]byte(`{"default":"","servers":{},"settings":{"default_limit":50,"output_format":"table"}}`),
+			0600); err != nil {
+			t.Fatalf("setup write: %v", err)
+		}
+		// Make the config file read-only so Save's truncate-write fails.
+		if err := os.Chmod(cfgPath, 0400); err != nil {
+			t.Fatalf("setup chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfgPath, 0600) })
+
+		defer saveAddFlags()()
+		addFlagURL = ts.URL
+		addFlagUser = "admin"
+		addFlagPassword = "rollback-secret"
+		addFlagAuth = "basic"
+
+		err := runConfigAdd(configAddCmd, []string{"rb-test"})
+		if err == nil {
+			t.Fatal("expected save to fail, got nil error")
+		}
+		if capturedRef == "" {
+			t.Fatal("keychain write was never attempted")
+		}
+		if deletedRef != capturedRef {
+			t.Errorf("rollback ref = %q, want %q (same as written)", deletedRef, capturedRef)
+		}
+	})
+}
+
+func TestConfigEditKeychain(t *testing.T) {
+	t.Run("new password migrates base64 to keychain", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "mig",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"mig": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("oldpass"),
+					AuthMode: "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "newpass", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"mig"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["mig"]
+		if srv.PasswordStorage != config.PasswordStorageKeychain {
+			t.Errorf("PasswordStorage = %q, want %q (migration to keychain)", srv.PasswordStorage, config.PasswordStorageKeychain)
+		}
+		kcValue, err := config.GetKeychainPassword(srv.PasswordRef)
+		if err != nil || kcValue != "newpass" {
+			t.Errorf("keychain value = %q, %v; want 'newpass', nil", kcValue, err)
+		}
+	})
+
+	t.Run("blank password preserves base64 storage", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "keep",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"keep": {
+					URL:      ts.URL + "/api/v1",
+					User:     "admin",
+					Password: config.EncodePassword("oldpass"),
+					AuthMode: "basic",
+					// PasswordStorage empty (legacy base64)
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "", func() {
+				captureStdout(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"keep"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		srv := saved.Servers["keep"]
+		if srv.PasswordStorage != "" {
+			t.Errorf("PasswordStorage = %q, want empty (preserved legacy)", srv.PasswordStorage)
+		}
+		if srv.PasswordRef != "" {
+			t.Errorf("PasswordRef = %q, want empty (preserved legacy)", srv.PasswordRef)
+		}
+		decoded, err := config.DecodePassword(srv.Password)
+		if err != nil || decoded != "oldpass" {
+			t.Errorf("decoded password = %q, %v; want 'oldpass', nil", decoded, err)
+		}
+	})
+
+	t.Run("connection test failure with decline keeps old keychain password", func(t *testing.T) {
+		// Arrange a keychain-backed server and a mock TM1 that fails the test.
+		ref := "edit-testfail-ref"
+		if err := config.SetKeychainPassword(ref, "oldkc"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer config.DeleteKeychainPassword(ref)
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{
+			Default:  "kc",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"kc": {
+					URL:             ts.URL + "/api/v1",
+					User:            "admin",
+					PasswordStorage: config.PasswordStorageKeychain,
+					PasswordRef:     ref,
+					AuthMode:        "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		// Enter for URL/auth/user, new password "newpw", then 'n' to "Save anyway?".
+		withStdin(t, "\n\n\nn\n", func() {
+			withMockPassword(t, "newpw", func() {
+				captureAll(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"kc"}); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				})
+			})
+		})
+
+		// The old keychain password must still be intact.
+		got, err := config.GetKeychainPassword(ref)
+		if err != nil {
+			t.Fatalf("keychain lookup failed: %v", err)
+		}
+		if got != "oldkc" {
+			t.Errorf("keychain value = %q, want 'oldkc' (edit was declined, must not mutate)", got)
+		}
+	})
+
+	t.Run("save failure restores previous keychain password", func(t *testing.T) {
+		// Arrange a keychain-backed server.
+		ref := "edit-savefail-ref"
+		if err := config.SetKeychainPassword(ref, "prevkc"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer config.DeleteKeychainPassword(ref)
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", tmpDir)
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		if err := os.MkdirAll(cfgDir, 0700); err != nil {
+			t.Fatalf("setup mkdir: %v", err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		cfgBody := `{"default":"kc","servers":{"kc":{"url":"` + ts.URL + `/api/v1","user":"admin","password":"","password_storage":"keychain","password_ref":"` + ref + `","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`
+		if err := os.WriteFile(cfgPath, []byte(cfgBody), 0600); err != nil {
+			t.Fatalf("setup write: %v", err)
+		}
+		if err := os.Chmod(cfgPath, 0400); err != nil {
+			t.Fatalf("setup chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfgPath, 0600) })
+
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "newkc", func() {
+				captureAll(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"kc"}); err == nil {
+						t.Fatal("expected Save to fail, got nil")
+					}
+				})
+			})
+		})
+
+		// After the failed save, the keychain should still hold the old value.
+		got, err := config.GetKeychainPassword(ref)
+		if err != nil {
+			t.Fatalf("keychain lookup failed: %v", err)
+		}
+		if got != "prevkc" {
+			t.Errorf("keychain value = %q, want 'prevkc' (save failed, restore required)", got)
+		}
+	})
+
+	t.Run("keychain write fails then save fails restores original keychain", func(t *testing.T) {
+		// Arrange a keychain-backed server with a live secret.
+		ref := "edit-compound-ref"
+		if err := config.SetKeychainPassword(ref, "origkc"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer config.DeleteKeychainPassword(ref)
+
+		// Simulate a transient keychain failure: the StorePassword write
+		// fails (causing fallback + deletion of the old entry), but a
+		// subsequent restore write succeeds. Without this, the test would
+		// only exercise the true-unavailable path where no recovery is
+		// possible — the rollback logic we're testing requires a working
+		// keychain by the time it runs.
+		realSet := keyring.Set
+		var setCallCount int
+		restoreSet := config.OverrideKeychainSet(func(service, user, password string) error {
+			setCallCount++
+			if setCallCount == 1 {
+				return fmt.Errorf("simulated transient keychain failure")
+			}
+			return realSet(service, user, password)
+		})
+		defer restoreSet()
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", tmpDir)
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		if err := os.MkdirAll(cfgDir, 0700); err != nil {
+			t.Fatalf("setup mkdir: %v", err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		cfgBody := `{"default":"kc","servers":{"kc":{"url":"` + ts.URL + `/api/v1","user":"admin","password":"","password_storage":"keychain","password_ref":"` + ref + `","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`
+		if err := os.WriteFile(cfgPath, []byte(cfgBody), 0600); err != nil {
+			t.Fatalf("setup write: %v", err)
+		}
+		// Make the file read-only so Save fails.
+		if err := os.Chmod(cfgPath, 0400); err != nil {
+			t.Fatalf("setup chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfgPath, 0600) })
+
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "brandnew", func() {
+				captureAll(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"kc"}); err == nil {
+						t.Fatal("expected Save to fail, got nil")
+					}
+				})
+			})
+		})
+
+		// The original keychain entry must be restored — the on-disk config
+		// still points at this ref, so it has to resolve.
+		got, err := config.GetKeychainPassword(ref)
+		if err != nil {
+			t.Fatalf("keychain lookup failed: %v — original entry was deleted and not restored", err)
+		}
+		if got != "origkc" {
+			t.Errorf("keychain value = %q, want 'origkc' (compound failure must restore)", got)
+		}
+	})
+}
+
+func TestConfigRemoveKeychain(t *testing.T) {
+	t.Run("deletes keychain entry when removing", func(t *testing.T) {
+		ref := "test-remove-ref"
+		if err := config.SetKeychainPassword(ref, "stored-secret"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer config.DeleteKeychainPassword(ref)
+
+		cfg := &config.Config{
+			Default:  "rm",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"rm": {
+					URL:             "https://host:8010/api/v1",
+					User:            "admin",
+					PasswordStorage: config.PasswordStorageKeychain,
+					PasswordRef:     ref,
+					AuthMode:        "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		withStdin(t, "y\n", func() {
+			captureStdout(t, func() {
+				if err := runConfigRemove(configRemoveCmd, []string{"rm"}); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+		})
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config: %v", err)
+		}
+		if _, ok := saved.Servers["rm"]; ok {
+			t.Error("server 'rm' should be removed from config")
+		}
+
+		_, err = config.GetKeychainPassword(ref)
+		if err == nil {
+			t.Error("keychain entry should have been deleted")
+		}
+	})
+
+	t.Run("keychain delete failure does not break config save", func(t *testing.T) {
+		restore := config.OverrideKeychainDelete(func(service, user string) error {
+			return fmt.Errorf("simulated delete failure")
+		})
+		defer restore()
+
+		cfg := &config.Config{
+			Default:  "rm-fail",
+			Settings: config.DefaultSettings(),
+			Servers: map[string]config.ServerConfig{
+				"rm-fail": {
+					URL:             "https://host:8010/api/v1",
+					User:            "admin",
+					PasswordStorage: config.PasswordStorageKeychain,
+					PasswordRef:     "some-ref",
+					AuthMode:        "basic",
+				},
+			},
+		}
+		setupTestHome(t, cfg)
+
+		captured := captureAll(t, func() {
+			withStdin(t, "y\n", func() {
+				if err := runConfigRemove(configRemoveCmd, []string{"rm-fail"}); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+		})
+
+		if !strings.Contains(captured.Stderr, "orphaned") {
+			t.Errorf("stderr should warn about orphaned keychain entry, got: %q", captured.Stderr)
+		}
+
+		saved, err := config.Load()
+		if err != nil {
+			t.Fatalf("cannot load config after remove: %v", err)
+		}
+		if _, ok := saved.Servers["rm-fail"]; ok {
+			t.Error("server 'rm-fail' should be removed from config despite keychain failure")
 		}
 	})
 }

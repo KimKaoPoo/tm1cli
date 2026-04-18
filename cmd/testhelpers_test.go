@@ -11,7 +11,18 @@ import (
 	"testing"
 	"tm1cli/internal/config"
 	"tm1cli/internal/model"
+
+	"github.com/zalando/go-keyring"
 )
+
+// TestMain initializes the go-keyring mock provider before any tests run.
+// Without this, tests exercising config add/edit flows would hit the real
+// OS keychain and prompt the user. Mock state is process-global, so tests
+// that touch keychain must not call t.Parallel().
+func TestMain(m *testing.M) {
+	keyring.MockInit()
+	os.Exit(m.Run())
+}
 
 // capturedOutput holds captured stdout and stderr.
 type capturedOutput struct {
