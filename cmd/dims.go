@@ -342,12 +342,10 @@ type indentedRow struct {
 // element disappears from the output.
 func buildTree(elements []model.Element) []*treeNode {
 	byName := make(map[string]*model.Element, len(elements))
+	childOf := make(map[string]bool)
 	for i := range elements {
 		byName[elements[i].Name] = &elements[i]
-	}
-	childOf := make(map[string]bool)
-	for _, e := range elements {
-		for _, c := range e.Components {
+		for _, c := range elements[i].Components {
 			childOf[c.Name] = true
 		}
 	}
