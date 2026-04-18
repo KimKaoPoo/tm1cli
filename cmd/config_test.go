@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"tm1cli/internal/config"
+
+	"github.com/zalando/go-keyring"
 )
 
 // setupTestHome creates a temp directory, sets HOME, and optionally writes a config file.
@@ -1755,6 +1757,77 @@ func TestConfigEditKeychain(t *testing.T) {
 		}
 		if got != "prevkc" {
 			t.Errorf("keychain value = %q, want 'prevkc' (save failed, restore required)", got)
+		}
+	})
+
+	t.Run("keychain write fails then save fails restores original keychain", func(t *testing.T) {
+		// Arrange a keychain-backed server with a live secret.
+		ref := "edit-compound-ref"
+		if err := config.SetKeychainPassword(ref, "origkc"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer config.DeleteKeychainPassword(ref)
+
+		// Simulate a transient keychain failure: the StorePassword write
+		// fails (causing fallback + deletion of the old entry), but a
+		// subsequent restore write succeeds. Without this, the test would
+		// only exercise the true-unavailable path where no recovery is
+		// possible — the rollback logic we're testing requires a working
+		// keychain by the time it runs.
+		realSet := keyring.Set
+		var setCallCount int
+		restoreSet := config.OverrideKeychainSet(func(service, user, password string) error {
+			setCallCount++
+			if setCallCount == 1 {
+				return fmt.Errorf("simulated transient keychain failure")
+			}
+			return realSet(service, user, password)
+		})
+		defer restoreSet()
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"value":[]}`))
+		}))
+		defer ts.Close()
+
+		tmpDir := t.TempDir()
+		t.Setenv("HOME", tmpDir)
+		t.Setenv("TM1CLI_CONFIG", "")
+		t.Chdir(tmpDir)
+		cfgDir := filepath.Join(tmpDir, ".tm1cli")
+		if err := os.MkdirAll(cfgDir, 0700); err != nil {
+			t.Fatalf("setup mkdir: %v", err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		cfgBody := `{"default":"kc","servers":{"kc":{"url":"` + ts.URL + `/api/v1","user":"admin","password":"","password_storage":"keychain","password_ref":"` + ref + `","auth_mode":"basic"}},"settings":{"default_limit":50,"output_format":"table"}}`
+		if err := os.WriteFile(cfgPath, []byte(cfgBody), 0600); err != nil {
+			t.Fatalf("setup write: %v", err)
+		}
+		// Make the file read-only so Save fails.
+		if err := os.Chmod(cfgPath, 0400); err != nil {
+			t.Fatalf("setup chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfgPath, 0600) })
+
+		withStdin(t, "\n\n\n", func() {
+			withMockPassword(t, "brandnew", func() {
+				captureAll(t, func() {
+					if err := runConfigEdit(configEditCmd, []string{"kc"}); err == nil {
+						t.Fatal("expected Save to fail, got nil")
+					}
+				})
+			})
+		})
+
+		// The original keychain entry must be restored — the on-disk config
+		// still points at this ref, so it has to resolve.
+		got, err := config.GetKeychainPassword(ref)
+		if err != nil {
+			t.Fatalf("keychain lookup failed: %v — original entry was deleted and not restored", err)
+		}
+		if got != "origkc" {
+			t.Errorf("keychain value = %q, want 'origkc' (compound failure must restore)", got)
 		}
 	})
 }

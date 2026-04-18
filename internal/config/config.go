@@ -269,7 +269,7 @@ func (c *Config) GetEffectivePassword(serverName string) (string, error) {
 		}
 		pw, err := GetKeychainPassword(srv.PasswordRef)
 		if errors.Is(err, ErrKeychainNotFound) {
-			return "", fmt.Errorf("password for '%s' not found in OS keychain (ref=%s). Run 'tm1cli config edit %s' to re-enter", serverName, srv.PasswordRef, serverName)
+			return "", fmt.Errorf("password for '%s' not found in OS keychain. Run 'tm1cli config edit %s' to re-enter", serverName, serverName)
 		}
 		if err != nil {
 			return "", fmt.Errorf("cannot read password from keychain for '%s': %w", serverName, err)

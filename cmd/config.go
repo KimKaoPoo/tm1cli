@@ -414,14 +414,10 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	// Test passed (or user chose save-anyway). Now persist the new password
 	// — only for the new-password branch. Blank input preserves existing
 	// storage; env-var input is a one-off override that should not be stored.
+	var storeWarning string
+	usedKeychain := false
 	if newPassword != "" {
-		usedKeychain, warning := config.StorePassword(&srv, newPassword)
-		if warning != "" {
-			fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
-		}
-		if usedKeychain {
-			fmt.Println("Password stored in OS keychain.")
-		}
+		usedKeychain, storeWarning = config.StorePassword(&srv, newPassword)
 	}
 
 	cfg.Servers[name] = srv
@@ -435,12 +431,29 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 				srv.PasswordStorage == config.PasswordStorageKeychain:
 				// base64 → keychain migration that was about to commit: drop the new entry.
 				_ = config.ClearStoredPassword(&srv)
+			case origSrv.PasswordStorage == config.PasswordStorageKeychain &&
+				srv.PasswordStorage == config.PasswordStorageBase64 &&
+				origSrv.PasswordRef != "" && origPlaintext != "":
+				// Keychain write failed and fell back to base64; StorePassword
+				// already deleted the original keychain entry. Restore it so the
+				// unchanged on-disk config (still pointing at the old ref)
+				// resolves correctly on the next load.
+				_ = config.SetKeychainPassword(origSrv.PasswordRef, origPlaintext)
 			case origPlaintext != "" && srv.PasswordStorage == config.PasswordStorageKeychain && srv.PasswordRef == origSrv.PasswordRef:
 				// Overwrote an existing keychain entry: restore the previous plaintext.
 				_ = config.SetKeychainPassword(srv.PasswordRef, origPlaintext)
 			}
 		}
 		return fmt.Errorf("cannot save config: %w", err)
+	}
+
+	// Save succeeded — surface any keychain warnings now so users don't see
+	// a "keychain unavailable" warning paired with a subsequent save error.
+	if storeWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", storeWarning)
+	}
+	if usedKeychain {
+		fmt.Println("Password stored in OS keychain.")
 	}
 
 	fmt.Printf("Connection '%s' updated.\n", name)
