@@ -31,9 +31,6 @@ func TestCompletionGenerators(t *testing.T) {
 				t.Fatalf("generator returned error: %v", err)
 			}
 			out := buf.String()
-			if out == "" {
-				t.Fatalf("expected non-empty completion output")
-			}
 			if !strings.Contains(out, tt.contains) {
 				t.Errorf("expected output to contain %q; first 300 chars:\n%s", tt.contains, firstN(out, 300))
 			}
