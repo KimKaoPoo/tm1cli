@@ -308,6 +308,10 @@ func displayMembers(elements []model.Element, total int, limit int, jsonMode boo
 	if treeMode {
 		flat := flattenTree(buildTree(elements))
 		flatTotal := len(flat)
+		uniqueNames := make(map[string]struct{}, flatTotal)
+		for _, r := range flat {
+			uniqueNames[r.name] = struct{}{}
+		}
 		shown := flat
 		if limit > 0 && len(shown) > limit {
 			shown = shown[:limit]
@@ -317,7 +321,7 @@ func displayMembers(elements []model.Element, total int, limit int, jsonMode boo
 			rows[i] = []string{strings.Repeat("  ", r.depth) + r.name, r.elType}
 		}
 		output.PrintTable(headers, rows)
-		output.PrintSummary(len(shown), flatTotal)
+		output.PrintTreeSummary(len(shown), flatTotal, len(uniqueNames))
 		return
 	}
 

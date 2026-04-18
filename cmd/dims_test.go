@@ -962,8 +962,35 @@ func TestDisplayMembers_TreeLimitTruncation(t *testing.T) {
 	if strings.Contains(captured.Stdout, "Feb") {
 		t.Error("output should NOT contain Feb (truncated)")
 	}
-	if !strings.Contains(captured.Stderr, "Showing 3 of 5") {
-		t.Errorf("stderr should contain truncation summary, got: %q", captured.Stderr)
+	if !strings.Contains(captured.Stderr, "Showing 3 of 5 rows") {
+		t.Errorf("stderr should contain tree truncation summary, got: %q", captured.Stderr)
+	}
+}
+
+func TestDisplayMembers_TreeDiamondReportsUniqueCount(t *testing.T) {
+	origCount := membersCount
+	defer func() { membersCount = origCount }()
+	membersCount = false
+
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "D", Type: "Numeric"},
+	}
+
+	captured := captureAll(t, func() {
+		displayMembers(elements, len(elements), 3, false, true)
+	})
+
+	if !strings.Contains(captured.Stderr, "rows") {
+		t.Errorf("summary should say 'rows' in tree mode, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "unique") {
+		t.Errorf("diamond hierarchy should report unique element count, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "4 unique") {
+		t.Errorf("unique count should be 4 (A,B,C,D), got: %q", captured.Stderr)
 	}
 }
 
