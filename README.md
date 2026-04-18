@@ -226,7 +226,7 @@ tm1cli completion powershell # PowerShell
 - [x] v0.1.2 — Bug fixes for export and URL handling
 - [x] v0.2.0 — MDX export, XLSX output, config edit, views, subsets, diagnostics
 - [x] v0.3.0 — Process dump/load, watch mode
-- [ ] v0.4.0 — OS keychain password storage, tab completion, consolidated member indentation, cellset parsing
+- [ ] v0.4.0 — OS keychain password storage, consolidated member indentation, cellset parsing
 
 ## License
 
