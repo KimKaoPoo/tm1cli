@@ -891,6 +891,114 @@ func TestBuildTree_PreservesComponentOrder(t *testing.T) {
 	}
 }
 
+func TestBuildTreeBounded_UnderBudgetNoOverflow(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}}},
+		{Name: "B", Type: "Numeric"},
+	}
+
+	_, overflow := buildTreeBounded(elements, 100)
+	if overflow {
+		t.Error("2-node tree should not overflow a 100-node budget")
+	}
+}
+
+func TestBuildTreeBounded_LayeredDiamondOverflows(t *testing.T) {
+	// Build a layered diamond: each layer doubles the render count via
+	// two parents sharing the same two children. 8 layers with ~2 unique
+	// elements each expand to roughly 2^8 = 256 nodes, which blows past
+	// budget=16 but uses only ~16 unique elements.
+	elements := []model.Element{}
+	layers := 8
+	for i := 0; i < layers; i++ {
+		parent := fmt.Sprintf("L%dP", i)
+		left := fmt.Sprintf("L%dA", i+1)
+		right := fmt.Sprintf("L%dB", i+1)
+		elements = append(elements, model.Element{
+			Name:       parent,
+			Type:       "Consolidated",
+			Components: []model.Component{{Name: left}, {Name: right}},
+		})
+		// Each non-leaf child points to the next layer's parent (shared).
+		if i < layers-1 {
+			nextParent := fmt.Sprintf("L%dP", i+1)
+			elements = append(elements,
+				model.Element{Name: left, Type: "Consolidated", Components: []model.Component{{Name: nextParent}}},
+				model.Element{Name: right, Type: "Consolidated", Components: []model.Component{{Name: nextParent}}},
+			)
+		} else {
+			elements = append(elements,
+				model.Element{Name: left, Type: "Numeric"},
+				model.Element{Name: right, Type: "Numeric"},
+			)
+		}
+	}
+
+	_, overflow := buildTreeBounded(elements, 64)
+	if !overflow {
+		t.Error("layered-diamond expansion should overflow a 64-node budget")
+	}
+
+	_, overflow = buildTreeBounded(elements, 0)
+	if overflow {
+		t.Error("unlimited budget (0) should never overflow")
+	}
+}
+
+func TestRunDimsMembers_TreeModeDiamondOverflowErrors(t *testing.T) {
+	resetCmdFlags(t)
+
+	// Build layered diamonds that over-expand past treeRenderCeiling
+	// while keeping unique element count below the gate.
+	names := []string{}
+	types := []string{}
+	children := map[string][]string{}
+	layers := 24 // 2^24 >> 50000
+	for i := 0; i < layers; i++ {
+		parent := fmt.Sprintf("L%dP", i)
+		left := fmt.Sprintf("L%dA", i+1)
+		right := fmt.Sprintf("L%dB", i+1)
+		names = append(names, parent)
+		types = append(types, "Consolidated")
+		children[parent] = []string{left, right}
+		if i == layers-1 {
+			names = append(names, left, right)
+			types = append(types, "Numeric", "Numeric")
+		} else {
+			nextParent := fmt.Sprintf("L%dP", i+1)
+			names = append(names, left, right)
+			types = append(types, "Consolidated", "Consolidated")
+			children[left] = []string{nextParent}
+			children[right] = []string{nextParent}
+		}
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			// Small unique count — gate does not trigger.
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", len(names))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(names, types, children))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"DiamondDim"})
+		if err != errSilent {
+			t.Fatalf("diamond explosion should error with errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "render rows") {
+		t.Errorf("overflow error should mention 'render rows', got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "--flat") {
+		t.Errorf("overflow error should suggest --flat, got stderr: %q", captured.Stderr)
+	}
+}
+
 func TestFlattenTreeCapped_StopsAtCap(t *testing.T) {
 	elements := []model.Element{
 		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
@@ -1058,6 +1166,11 @@ func TestRunDimsMembers_TreeOutputEndToEnd(t *testing.T) {
 	resetCmdFlags(t)
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("3"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsWithComponentsJSON(
 			[]string{"Year", "Q1", "Jan"},
@@ -1203,8 +1316,8 @@ func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
 	if elementsFetched {
 		t.Error("gate must abort before the heavy elements fetch; server saw the request")
 	}
-	if !strings.Contains(captured.Stderr, "--all") {
-		t.Errorf("gate error should suggest --all, got stderr: %q", captured.Stderr)
+	if !strings.Contains(captured.Stderr, "Tree view requires --all") {
+		t.Errorf("gate error should lock the phrase 'Tree view requires --all', got stderr: %q", captured.Stderr)
 	}
 	if !strings.Contains(captured.Stderr, "--flat") {
 		t.Errorf("gate error should suggest --flat, got stderr: %q", captured.Stderr)
@@ -1212,6 +1325,66 @@ func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
 	wantCount := fmt.Sprintf("%d", treeElementGate+1)
 	if !strings.Contains(captured.Stderr, wantCount) {
 		t.Errorf("gate error should include the element count %s, got stderr: %q", wantCount, captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflightFailsClosed(t *testing.T) {
+	resetCmdFlags(t)
+
+	var heavyFetched bool
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"$count not supported"}`))
+			return
+		}
+		heavyFetched = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent when preflight fails, got: %v", err)
+		}
+	})
+
+	if heavyFetched {
+		t.Error("preflight failure must fail closed; heavy fetch should not run")
+	}
+	if captured.Stderr == "" {
+		t.Error("preflight failure must emit a user-visible error on stderr")
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflightNonIntegerFailsClosed(t *testing.T) {
+	resetCmdFlags(t)
+
+	var heavyFetched bool
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"not":"an integer"}`))
+			return
+		}
+		heavyFetched = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent on non-integer preflight response, got: %v", err)
+		}
+	})
+
+	if heavyFetched {
+		t.Error("non-integer preflight response must fail closed; heavy fetch should not run")
+	}
+	if !strings.Contains(captured.Stderr, "cannot verify dimension size") {
+		t.Errorf("should report size-verification failure, got stderr: %q", captured.Stderr)
 	}
 }
 
@@ -1301,6 +1474,11 @@ func TestRunDimsMembers_TreeModeOmitsTop(t *testing.T) {
 
 	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("1"))
+			return
+		}
 		capturedQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsWithComponentsJSON(
@@ -1422,6 +1600,11 @@ func TestRunDimsMembers_EndToEnd(t *testing.T) {
 	resetCmdFlags(t)
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("3"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON(
 			[]string{"Jan", "Feb", "Mar"},
@@ -1456,6 +1639,12 @@ func TestRunDimsMembers_CustomHierarchy(t *testing.T) {
 
 	var capturedPath string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("2"))
+			return
+		}
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON([]string{"East", "West"}, []string{"Numeric", "Numeric"}))
@@ -1484,6 +1673,12 @@ func TestRunDimsMembers_DefaultHierarchyMatchesDimName(t *testing.T) {
 
 	var capturedPath string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("1"))
+			return
+		}
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON([]string{"Q1"}, []string{"Consolidated"}))
