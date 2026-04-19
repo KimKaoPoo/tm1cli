@@ -29,16 +29,23 @@ func PrintSummary(shown int, total int) {
 	}
 }
 
+// UniqueElementsUnknown signals to PrintTreeSummary that the caller did
+// not compute a unique-element count; the "(N unique elements)" clause
+// will be suppressed.
+const UniqueElementsUnknown = -1
+
 // PrintTreeSummary is the tree-mode equivalent of PrintSummary. The
 // displayed count is paths ("rows") rather than unique elements because
 // diamond hierarchies render shared children under every parent; the
 // unique-element count is appended when it differs so users aren't
-// misled into thinking "Showing 3 of 7" means 7 distinct members.
+// misled into thinking "Showing 3 of 7" means 7 distinct members. Pass
+// UniqueElementsUnknown (or a value equal to totalRows) to suppress the
+// unique-count suffix.
 func PrintTreeSummary(shownRows int, totalRows int, uniqueElements int) {
 	if shownRows >= totalRows {
 		return
 	}
-	if uniqueElements > 0 && uniqueElements != totalRows {
+	if uniqueElements != UniqueElementsUnknown && uniqueElements != totalRows {
 		fmt.Fprintf(os.Stderr, "Showing %d of %d rows (%d unique elements). Use --filter to search or --all to show everything.\n", shownRows, totalRows, uniqueElements)
 		return
 	}

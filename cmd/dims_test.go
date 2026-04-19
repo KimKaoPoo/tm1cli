@@ -891,6 +891,48 @@ func TestBuildTree_PreservesComponentOrder(t *testing.T) {
 	}
 }
 
+func TestFlattenTreeCapped_StopsAtCap(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Numeric"},
+		{Name: "D", Type: "Numeric"},
+	}
+	roots := buildTree(elements)
+
+	shown := flattenTreeCapped(roots, 2)
+	if len(shown) != 2 {
+		t.Fatalf("cap=2 should return 2 rows, got %d: %v", len(shown), flatNamesDepths(shown))
+	}
+	want := []string{"A@0", "B@1"}
+	if !stringSliceEqual(flatNamesDepths(shown), want) {
+		t.Errorf("cap=2 DFS preorder = %v, want %v", flatNamesDepths(shown), want)
+	}
+
+	unCapped := flattenTreeCapped(roots, 0)
+	if len(unCapped) != 4 {
+		t.Errorf("cap=0 should walk all rows, got %d: %v", len(unCapped), flatNamesDepths(unCapped))
+	}
+}
+
+func TestTreeStats_CountsRowsAndUnique(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "D", Type: "Numeric"},
+	}
+	roots := buildTree(elements)
+
+	flatTotal, uniqueCount := treeStats(roots)
+	if flatTotal != 5 {
+		t.Errorf("flatTotal = %d, want 5 (A,B,D,C,D)", flatTotal)
+	}
+	if uniqueCount != 4 {
+		t.Errorf("uniqueCount = %d, want 4 (A,B,C,D)", uniqueCount)
+	}
+}
+
 func TestBuildTree_EmptyInput(t *testing.T) {
 	if got := buildTree(nil); len(got) != 0 {
 		t.Errorf("buildTree(nil) = %v, want empty", got)
@@ -1136,37 +1178,66 @@ func TestRunDimsMembers_CountSkipsExpand(t *testing.T) {
 	}
 }
 
-func TestRunDimsMembers_TreeModeWarnsOnLargeFetch(t *testing.T) {
+func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
 	resetCmdFlags(t)
 
-	names := make([]string, treeWarnThreshold+1)
-	types := make([]string, treeWarnThreshold+1)
-	for i := range names {
-		names[i] = fmt.Sprintf("Elem%d", i)
-		types[i] = "Numeric"
+	var elementsFetched bool
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", treeElementGate+1)
+			return
+		}
+		elementsFetched = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON([]string{"X"}, []string{"Numeric"}, nil))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != errSilent {
+			t.Fatalf("expected errSilent when gate triggers, got: %v", err)
+		}
+	})
+
+	if elementsFetched {
+		t.Error("gate must abort before the heavy elements fetch; server saw the request")
 	}
+	if !strings.Contains(captured.Stderr, "--all") {
+		t.Errorf("gate error should suggest --all, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "--flat") {
+		t.Errorf("gate error should suggest --flat, got stderr: %q", captured.Stderr)
+	}
+	wantCount := fmt.Sprintf("%d", treeElementGate+1)
+	if !strings.Contains(captured.Stderr, wantCount) {
+		t.Errorf("gate error should include the element count %s, got stderr: %q", wantCount, captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_TreeModeAllowsLargeWithAll(t *testing.T) {
+	resetCmdFlags(t)
+	membersAll = true
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", treeElementGate+1)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(elementsWithComponentsJSON(names, types, nil))
+		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
 	})
 
 	captured := captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("--all should bypass the gate, got error: %v", err)
 		}
 	})
 
-	if !strings.Contains(captured.Stderr, "[warn]") {
-		t.Errorf("expected warning for oversize tree fetch, got stderr: %q", captured.Stderr)
-	}
-	if !strings.Contains(captured.Stderr, "--flat") {
-		t.Errorf("warning should mention --flat, got stderr: %q", captured.Stderr)
-	}
-	wantCount := fmt.Sprintf("%d", treeWarnThreshold+1)
-	if !strings.Contains(captured.Stderr, wantCount) {
-		t.Errorf("warning should include element count %s, got stderr: %q", wantCount, captured.Stderr)
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("output should render elements when --all is set, got:\n%s", captured.Stdout)
 	}
 }
 
@@ -1174,6 +1245,11 @@ func TestRunDimsMembers_TreeModeQuietBelowThreshold(t *testing.T) {
 	resetCmdFlags(t)
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("2"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsWithComponentsJSON(
 			[]string{"Year", "Q1"},
@@ -1185,40 +1261,37 @@ func TestRunDimsMembers_TreeModeQuietBelowThreshold(t *testing.T) {
 	captured := captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Small"})
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("below-gate count should not error, got: %v", err)
 		}
 	})
 
-	if strings.Contains(captured.Stderr, "Fetched") {
-		t.Errorf("small dimensions should not emit fetch-size warning, got stderr: %q", captured.Stderr)
+	if strings.Contains(captured.Stderr, "--all") {
+		t.Errorf("small dimensions should not trigger the gate error, got stderr: %q", captured.Stderr)
 	}
 }
 
-func TestRunDimsMembers_FlatModeNeverWarnsOnSize(t *testing.T) {
+func TestRunDimsMembers_FlatModeSkipsCountPreflight(t *testing.T) {
 	resetCmdFlags(t)
 	membersFlat = true
 
-	names := make([]string, treeWarnThreshold+1)
-	types := make([]string, treeWarnThreshold+1)
-	for i := range names {
-		names[i] = fmt.Sprintf("Elem%d", i)
-		types[i] = "Numeric"
-	}
-
+	var countCalled bool
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			countCalled = true
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(elementsJSON(names, types))
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
 	})
 
-	captured := captureAll(t, func() {
+	captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	if strings.Contains(captured.Stderr, "Fetched") {
-		t.Errorf("--flat should never emit fetch-size warning, got stderr: %q", captured.Stderr)
+	if countCalled {
+		t.Error("--flat should skip the $count pre-flight entirely")
 	}
 }
 

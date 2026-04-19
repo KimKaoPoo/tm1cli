@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -181,9 +182,9 @@ elements are indented two spaces per level. Use --flat for a single-level
 list. Indentation is disabled automatically with --filter, --count, and
 --output json.
 
-Tree mode fetches the full hierarchy so indentation stays intact; on very
-large dimensions (>5000 elements) a stderr warning is emitted recommending
---flat for faster queries.`,
+Tree mode fetches the full hierarchy so indentation stays intact. For
+dimensions over 5000 elements, tree view is gated behind --all; use
+--flat for a faster listing or --all to acknowledge the fetch cost.`,
 	Example: `  tm1cli dims members Period
   tm1cli dims members Period --flat
   tm1cli dims members Region --hierarchy "Alternate Region"
@@ -217,6 +218,16 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 	}
 
 	treeMode := !jsonMode && !membersCount && !membersFlat && membersFilter == ""
+
+	if treeMode && !membersAll {
+		countEndpoint := fmt.Sprintf("Dimensions('%s')/Hierarchies('%s')/Elements/$count", url.PathEscape(dimName), url.PathEscape(hierarchy))
+		if data, err := cl.Get(countEndpoint); err == nil {
+			if n, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && n > treeElementGate {
+				output.PrintError(fmt.Sprintf("dimension has %d elements. Tree view requires --all for dimensions over %d; use --flat for a faster listing.", n, treeElementGate), jsonMode)
+				return errSilent
+			}
+		}
+	}
 
 	endpoint := fmt.Sprintf("Dimensions('%s')/Hierarchies('%s')/Elements?$select=Name,Type", url.PathEscape(dimName), url.PathEscape(hierarchy))
 	if treeMode {
@@ -263,15 +274,11 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		elements = filterElementsByName(elements, membersFilter)
 	}
 
-	if treeMode && len(elements) > treeWarnThreshold {
-		output.PrintWarning(fmt.Sprintf("Fetched %d elements; use --flat for faster queries on large dimensions.", len(elements)))
-	}
-
 	displayMembers(elements, len(elements), limit, jsonMode, treeMode)
 	return nil
 }
 
-const treeWarnThreshold = 5000
+const treeElementGate = 5000
 
 func filterElementsByName(elements []model.Element, filter string) []model.Element {
 	lower := strings.ToLower(filter)
@@ -306,22 +313,15 @@ func displayMembers(elements []model.Element, total int, limit int, jsonMode boo
 	headers := []string{"NAME", "TYPE"}
 
 	if treeMode {
-		flat := flattenTree(buildTree(elements))
-		flatTotal := len(flat)
-		uniqueNames := make(map[string]struct{}, flatTotal)
-		for _, r := range flat {
-			uniqueNames[r.name] = struct{}{}
-		}
-		shown := flat
-		if limit > 0 && len(shown) > limit {
-			shown = shown[:limit]
-		}
+		roots := buildTree(elements)
+		flatTotal, uniqueCount := treeStats(roots)
+		shown := flattenTreeCapped(roots, limit)
 		rows := make([][]string, len(shown))
 		for i, r := range shown {
 			rows[i] = []string{strings.Repeat("  ", r.depth) + r.name, r.elType}
 		}
 		output.PrintTable(headers, rows)
-		output.PrintTreeSummary(len(shown), flatTotal, len(uniqueNames))
+		output.PrintTreeSummary(len(shown), flatTotal, uniqueCount)
 		return
 	}
 
@@ -401,18 +401,52 @@ func buildNode(e *model.Element, byName map[string]*model.Element, visitedAll, v
 }
 
 func flattenTree(roots []*treeNode) []indentedRow {
+	return flattenTreeCapped(roots, 0)
+}
+
+// flattenTreeCapped walks the tree in DFS preorder and stops materializing
+// rows once the cap is reached. Pass cap <= 0 for no cap. The DFS itself
+// short-circuits — callers still needing a full flatTotal should use
+// treeStats for a count-only pass.
+func flattenTreeCapped(roots []*treeNode, cap int) []indentedRow {
 	var out []indentedRow
-	var dfs func(*treeNode, int)
-	dfs = func(n *treeNode, d int) {
+	var dfs func(*treeNode, int) bool
+	dfs = func(n *treeNode, d int) bool {
 		out = append(out, indentedRow{depth: d, name: n.elem.Name, elType: n.elem.Type})
+		if cap > 0 && len(out) >= cap {
+			return false
+		}
 		for _, c := range n.children {
-			dfs(c, d+1)
+			if !dfs(c, d+1) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, r := range roots {
+		if !dfs(r, 0) {
+			return out
+		}
+	}
+	return out
+}
+
+// treeStats counts total DFS rows and unique element names without
+// materializing row structs.
+func treeStats(roots []*treeNode) (flatTotal int, uniqueCount int) {
+	seen := make(map[string]struct{})
+	var dfs func(*treeNode)
+	dfs = func(n *treeNode) {
+		flatTotal++
+		seen[n.elem.Name] = struct{}{}
+		for _, c := range n.children {
+			dfs(c)
 		}
 	}
 	for _, r := range roots {
-		dfs(r, 0)
+		dfs(r)
 	}
-	return out
+	return flatTotal, len(seen)
 }
 
 func init() {

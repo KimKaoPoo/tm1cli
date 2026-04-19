@@ -289,10 +289,10 @@ func TestPrintTreeSummary(t *testing.T) {
 			contains: []string{"Showing 3 of 10 rows", "7 unique elements"},
 		},
 		{
-			name:     "unique == 0 is treated as unknown and omitted",
+			name:     "UniqueElementsUnknown sentinel omits unique clause",
 			shown:    3,
 			total:    10,
-			unique:   0,
+			unique:   UniqueElementsUnknown,
 			contains: []string{"Showing 3 of 10 rows"},
 		},
 	}
