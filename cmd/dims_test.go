@@ -1328,63 +1328,72 @@ func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
 	}
 }
 
-func TestRunDimsMembers_TreeModePreflightFailsClosed(t *testing.T) {
+func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
 	resetCmdFlags(t)
 
-	var heavyFetched bool
+	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/$count") {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error":"$count not supported"}`))
 			return
 		}
-		heavyFetched = true
+		capturedQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
 	})
 
 	captured := captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
-		if err != errSilent {
-			t.Fatalf("expected errSilent when preflight fails, got: %v", err)
+		if err != nil {
+			t.Fatalf("preflight failure should fall back to flat, got: %v", err)
 		}
 	})
 
-	if heavyFetched {
-		t.Error("preflight failure must fail closed; heavy fetch should not run")
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("fallback should emit [warn] on stderr, got: %q", captured.Stderr)
 	}
-	if captured.Stderr == "" {
-		t.Error("preflight failure must emit a user-visible error on stderr")
+	if !strings.Contains(captured.Stderr, "flat output") {
+		t.Errorf("fallback warning should mention flat output, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand (tree mode disabled); got query: %s", capturedQuery)
 	}
 }
 
-func TestRunDimsMembers_TreeModePreflightNonIntegerFailsClosed(t *testing.T) {
+func TestRunDimsMembers_TreeModePreflightNonIntegerFallsBackToFlat(t *testing.T) {
 	resetCmdFlags(t)
 
-	var heavyFetched bool
+	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/$count") {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"not":"an integer"}`))
 			return
 		}
-		heavyFetched = true
+		capturedQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
 	})
 
 	captured := captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
-		if err != errSilent {
-			t.Fatalf("expected errSilent on non-integer preflight response, got: %v", err)
+		if err != nil {
+			t.Fatalf("non-integer preflight should fall back, got: %v", err)
 		}
 	})
 
-	if heavyFetched {
-		t.Error("non-integer preflight response must fail closed; heavy fetch should not run")
-	}
 	if !strings.Contains(captured.Stderr, "cannot verify dimension size") {
-		t.Errorf("should report size-verification failure, got stderr: %q", captured.Stderr)
+		t.Errorf("fallback warning should mention size verification, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand; got query: %s", capturedQuery)
 	}
 }
 

@@ -197,8 +197,10 @@ list. Indentation is disabled automatically with --filter, --count, and
 Tree mode fetches the full hierarchy so indentation stays intact. For
 dimensions over 5000 elements, tree view is gated behind --all; use
 --flat for a faster listing or --all to acknowledge the fetch cost.
-Hierarchies with extreme diamond expansion (over 50000 render rows)
-are rejected unconditionally — use --flat to inspect them.`,
+If the server doesn't support /Elements/$count the command falls back
+to flat output with a warning. Hierarchies with extreme diamond
+expansion (over 50000 render rows) are rejected unconditionally — use
+--flat to inspect them.`,
 	Example: `  tm1cli dims members Period
   tm1cli dims members Period --flat
   tm1cli dims members Region --hierarchy "Alternate Region"
@@ -236,18 +238,20 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 	if treeMode && !membersAll {
 		countEndpoint := fmt.Sprintf("Dimensions('%s')/Hierarchies('%s')/Elements/$count", url.PathEscape(dimName), url.PathEscape(hierarchy))
 		data, err := cl.Get(countEndpoint)
-		if err != nil {
-			output.PrintError(err.Error(), jsonMode)
-			return errSilent
-		}
-		n, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-		if parseErr != nil {
-			output.PrintError("cannot verify dimension size (unexpected server response); re-run with --flat or --all.", jsonMode)
-			return errSilent
-		}
-		if n > treeElementGate {
-			output.PrintError(fmt.Sprintf("dimension has %d elements. Tree view requires --all for dimensions over %d; use --flat for a faster listing.", n, treeElementGate), jsonMode)
-			return errSilent
+		switch {
+		case err != nil:
+			output.PrintWarning("cannot verify dimension size; falling back to flat output (use --all for full tree view).")
+			treeMode = false
+		default:
+			n, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			switch {
+			case parseErr != nil:
+				output.PrintWarning("cannot verify dimension size (unexpected server response); falling back to flat output (use --all for full tree view).")
+				treeMode = false
+			case n > treeElementGate:
+				output.PrintError(fmt.Sprintf("dimension has %d elements. Tree view requires --all for dimensions over %d; use --flat for a faster listing.", n, treeElementGate), jsonMode)
+				return errSilent
+			}
 		}
 	}
 
