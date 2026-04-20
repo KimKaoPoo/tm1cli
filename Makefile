@@ -1,4 +1,4 @@
-VERSION := 0.3.0
+VERSION := 0.4.0
 
 build:
 	go build -ldflags "-X tm1cli/cmd.Version=$(VERSION)" -o tm1cli
