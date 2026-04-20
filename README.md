@@ -166,10 +166,13 @@ tm1cli cubes --output json          # JSON output
 
 ```bash
 tm1cli dims                                # list dimensions
-tm1cli dims members Period                 # list elements
+tm1cli dims members Period                 # list elements (indented tree by default)
+tm1cli dims members Period --flat          # flat list, no indentation
 tm1cli dims members Region --hierarchy "Alternate Region"
-tm1cli dims members Account --filter "Rev"
+tm1cli dims members Account --filter "Rev" # --filter forces a flat list
 ```
+
+Children of consolidated elements are indented two spaces per level. Use `--flat` for a single-level list. Indentation is disabled automatically with `--filter`, `--count`, and `--output json`.
 
 ### Processes
 

@@ -9,8 +9,13 @@ type DimensionResponse struct {
 }
 
 type Element struct {
+	Name       string      `json:"Name"`
+	Type       string      `json:"Type"`
+	Components []Component `json:"Components,omitempty"`
+}
+
+type Component struct {
 	Name string `json:"Name"`
-	Type string `json:"Type"`
 }
 
 type ElementResponse struct {

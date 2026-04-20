@@ -99,10 +99,49 @@ func TestElementJSON(t *testing.T) {
 			if err := json.Unmarshal(data, &got); err != nil {
 				t.Fatalf("Unmarshal error: %v", err)
 			}
-			if got != tt.input {
+			if got.Name != tt.input.Name || got.Type != tt.input.Type || len(got.Components) != len(tt.input.Components) {
 				t.Errorf("Round-trip = %+v, want %+v", got, tt.input)
 			}
 		})
+	}
+}
+
+func TestElementJSON_WithComponents(t *testing.T) {
+	e := Element{
+		Name:       "Year",
+		Type:       "Consolidated",
+		Components: []Component{{Name: "Q1"}, {Name: "Q2"}},
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	want := `{"Name":"Year","Type":"Consolidated","Components":[{"Name":"Q1"},{"Name":"Q2"}]}`
+	if string(data) != want {
+		t.Errorf("Marshal = %s, want %s", data, want)
+	}
+
+	var got Element
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if got.Name != e.Name || got.Type != e.Type || len(got.Components) != 2 {
+		t.Errorf("Round-trip lost fields: %+v", got)
+	}
+	if got.Components[0].Name != "Q1" || got.Components[1].Name != "Q2" {
+		t.Errorf("Components order not preserved: %+v", got.Components)
+	}
+}
+
+func TestElementJSON_OmitsComponentsWhenNil(t *testing.T) {
+	e := Element{Name: "Jan", Type: "Numeric"}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	got := string(data)
+	if got != `{"Name":"Jan","Type":"Numeric"}` {
+		t.Errorf("Marshal = %s, want %s", got, `{"Name":"Jan","Type":"Numeric"}`)
 	}
 }
 
