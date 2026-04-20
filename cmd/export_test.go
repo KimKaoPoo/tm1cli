@@ -871,16 +871,19 @@ func mapKeys(m map[string]interface{}) []string {
 }
 
 // ---------------------------------------------------------------------------
-// TestBuildCellsetRows — unit tests for the buildCellsetRows function
+// TestLayoutToStringRows — exercises buildCellsetLayout + layoutToStringRows
+// together for the legacy 2-axis cases previously covered by
+// buildCellsetRows. New cases (UniqueName labels, N-axis, scalar/single-axis)
+// live in their own tests below.
 // ---------------------------------------------------------------------------
 
-func TestBuildCellsetRows(t *testing.T) {
+func TestLayoutToStringRows(t *testing.T) {
 	tests := []struct {
 		name        string
 		resp        model.CellsetResponse
 		wantHeaders []string
 		wantRows    [][]string
-		wantNil     bool
+		wantNilLay  bool
 	}{
 		{
 			name: "normal 2-axis data",
@@ -963,15 +966,7 @@ func TestBuildCellsetRows(t *testing.T) {
 			wantRows:    [][]string{{"Sales", ""}},
 		},
 		{
-			name: "fewer than 2 axes returns nil",
-			resp: model.CellsetResponse{
-				Axes:  []model.CellsetAxis{{Ordinal: 0}},
-				Cells: nil,
-			},
-			wantNil: true,
-		},
-		{
-			name: "0 column tuples returns nil",
+			name: "0 column tuples returns nil layout",
 			resp: model.CellsetResponse{
 				Axes: []model.CellsetAxis{
 					{Ordinal: 0, Tuples: []model.CellsetTuple{}},
@@ -981,21 +976,25 @@ func TestBuildCellsetRows(t *testing.T) {
 				},
 				Cells: nil,
 			},
-			wantNil: true,
+			wantNilLay: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			headers, rows := buildCellsetRows(tt.resp)
+			layout := buildCellsetLayout(tt.resp)
 
-			if tt.wantNil {
-				if headers != nil || rows != nil {
-					t.Errorf("expected nil, got headers=%v rows=%v", headers, rows)
+			if tt.wantNilLay {
+				if layout != nil {
+					t.Errorf("expected nil layout, got %+v", layout)
 				}
 				return
 			}
+			if layout == nil {
+				t.Fatalf("expected non-nil layout")
+			}
 
+			headers, rows := layoutToStringRows(layout)
 			if len(headers) != len(tt.wantHeaders) {
 				t.Fatalf("headers length = %d, want %d", len(headers), len(tt.wantHeaders))
 			}
@@ -1004,7 +1003,6 @@ func TestBuildCellsetRows(t *testing.T) {
 					t.Errorf("headers[%d] = %q, want %q", i, h, tt.wantHeaders[i])
 				}
 			}
-
 			if len(rows) != len(tt.wantRows) {
 				t.Fatalf("rows length = %d, want %d", len(rows), len(tt.wantRows))
 			}
@@ -2204,5 +2202,867 @@ func TestRunExport_ViewNoCube(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Cube name is required") {
 		t.Errorf("error should mention cube requirement, got: %s", err.Error())
+	}
+}
+
+// ===========================================================================
+// Advanced cellset parsing (#25) — helpers, N-axis, scalar, single-axis,
+// collision handling, endpoint query shape.
+// ===========================================================================
+
+func TestParseBracketSegments(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"[A].[B].[C]", []string{"A", "B", "C"}},
+		{"[A]", []string{"A"}},
+		{"[A].[B].[C].[D]", []string{"A", "B", "C", "D"}},
+		{"[foo]]bar].[baz]", []string{"foo]bar", "baz"}},
+		{"[].[A]", []string{"", "A"}},
+		{"", nil},
+		{"NoBrackets", nil},
+		{"[Unterminated", nil},
+		{"[A]missingdot[B]", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := parseBracketSegments(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("length = %d, want %d (got=%v)", len(got), len(tt.want), got)
+			}
+			for i, seg := range got {
+				if seg != tt.want[i] {
+					t.Errorf("seg[%d] = %q, want %q", i, seg, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestDeriveDimensionLabel(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"[Period].[Period].[Jan]", "[Period]"},
+		{"[Period].[FY].[2024]", "[Period:FY]"},
+		{"[Version].[Actual]", "[Version]"},
+		{"", ""},
+		{"Garbage", ""},
+		{"[Unterminated", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := deriveDimensionLabel(tt.in); got != tt.want {
+				t.Errorf("deriveDimensionLabel(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSortedAxesReordersByOrdinal(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 2, Tuples: []model.CellsetTuple{{Ordinal: 0}}},
+			{Ordinal: 0, Tuples: []model.CellsetTuple{{Ordinal: 0}}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{{Ordinal: 0}}},
+		},
+	}
+	got := sortedAxes(resp)
+	if len(got) != 3 {
+		t.Fatalf("got %d axes, want 3", len(got))
+	}
+	for i, a := range got {
+		if a.Ordinal != i {
+			t.Errorf("got[%d].Ordinal = %d, want %d", i, a.Ordinal, i)
+		}
+	}
+}
+
+func TestSortedAxesDropsAndWarnsDuplicates(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0},
+			{Ordinal: 1},
+			{Ordinal: 1},
+			{Ordinal: 2},
+		},
+	}
+	stderr := captureStderr(t, func() {
+		got := sortedAxes(resp)
+		if len(got) != 3 {
+			t.Errorf("got %d axes, want 3 (duplicate 1 should be dropped)", len(got))
+		}
+	})
+	if !strings.Contains(stderr, "duplicate axis ordinal 1") {
+		t.Errorf("stderr missing duplicate warning, got: %s", stderr)
+	}
+}
+
+func TestDisambiguateLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"no dups", []string{"A", "B", "C"}, []string{"A", "B", "C"}},
+		{"simple dup", []string{"A", "B", "A"}, []string{"A", "B", "A(2)"}},
+		{"multiple dups", []string{"X", "X", "X", "Y", "X"}, []string{"X", "X(2)", "X(3)", "Y", "X(4)"}},
+		{"empty", []string{}, []string{}},
+		{"single", []string{"foo"}, []string{"foo"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := disambiguateLabels(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len = %d, want %d", len(got), len(tt.want))
+			}
+			for i, v := range got {
+				if v != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, v, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// cellsetWithTitle builds a 3-axis cellset: axis 0 (Jan, Feb), axis 1
+// (Revenue, Cost with UniqueName on Account dimension), axis 2 single-tuple
+// Version=Actual. Four cells at ordinals 0..3.
+func cellsetWithTitle() model.CellsetResponse {
+	return model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{
+				Ordinal: 0,
+				Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan", UniqueName: "[Period].[Period].[Jan]"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb", UniqueName: "[Period].[Period].[Feb]"}}},
+				},
+			},
+			{
+				Ordinal: 1,
+				Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost", UniqueName: "[Account].[Account].[Cost]"}}},
+				},
+			},
+			{
+				Ordinal: 2,
+				Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Actual", UniqueName: "[Version].[Version].[Actual]"}}},
+				},
+			},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 100.0},
+			{Ordinal: 1, Value: 200.0},
+			{Ordinal: 2, Value: 50.0},
+			{Ordinal: 3, Value: 80.0},
+		},
+	}
+}
+
+func TestPrintCellsetTableWithTitleAxis(t *testing.T) {
+	got := captureStdout(t, func() {
+		printCellsetTable(cellsetWithTitle())
+	})
+	wantSubs := []string{
+		"Slicer: [Version] = Actual",
+		"[Account]", "Jan", "Feb",
+		"Revenue", "100", "200",
+		"Cost", "50", "80",
+	}
+	for _, s := range wantSubs {
+		if !strings.Contains(got, s) {
+			t.Errorf("output missing %q\ngot:\n%s", s, got)
+		}
+	}
+}
+
+func TestPrintCellsetTableAlternateHierarchy(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan", UniqueName: "[Period].[FY].[Jan]"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 100.0}},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	// The column-axis alternate-hierarchy member stays joined via " / " logic
+	// (single member → just "Jan"); the row-axis label should be "[Account]".
+	if !strings.Contains(got, "[Account]") {
+		t.Errorf("output should contain [Account] row label, got:\n%s", got)
+	}
+	// Exercise the alternate-hierarchy label derivation by using it on a row axis.
+	resp2 := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan", UniqueName: "[Period].[Period].[Jan]"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "2024", UniqueName: "[Period].[FY].[2024]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 1.0}},
+	}
+	got2 := captureStdout(t, func() { printCellsetTable(resp2) })
+	if !strings.Contains(got2, "[Period:FY]") {
+		t.Errorf("output should contain [Period:FY] label for alt hierarchy, got:\n%s", got2)
+	}
+}
+
+func TestPrintCellsetTableScalar(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes:  nil,
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 42.5}},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	if !strings.Contains(got, "Result: 42.5") {
+		t.Errorf("expected 'Result: 42.5', got:\n%s", got)
+	}
+	if strings.Contains(got, "DIM1") {
+		t.Errorf("scalar output should not contain DIM1, got:\n%s", got)
+	}
+}
+
+func TestPrintCellsetTableSingleAxis(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+				{Ordinal: 2, Members: []model.CellsetMember{{Name: "Mar"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 10.0},
+			{Ordinal: 1, Value: 20.0},
+			{Ordinal: 2, Value: 30.0},
+		},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	for _, s := range []string{"Jan", "Feb", "Mar", "10", "20", "30"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("output missing %q, got:\n%s", s, got)
+		}
+	}
+}
+
+func TestPrintCellsetTableUniqueNameRowLabels(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Q1"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{
+					{Name: "US", UniqueName: "[Region].[Region].[US]"},
+					{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"},
+				}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 500.0}},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	for _, s := range []string{"[Region]", "[Account]"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("output should contain %q, got:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, "DIM1") || strings.Contains(got, "DIM2") {
+		t.Errorf("output should not fall back to DIMN when UniqueName is present, got:\n%s", got)
+	}
+}
+
+func TestPrintCellsetTableFallsBackToDimN(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 100.0}},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	if !strings.Contains(got, "DIM1") {
+		t.Errorf("output should fall back to DIM1 when UniqueName missing, got:\n%s", got)
+	}
+}
+
+func TestPrintCellsetTableMultiTupleHigherAxisFlattens(t *testing.T) {
+	// Axis 0: 1 col (Jan). Axis 1: 2 rows (Revenue, Cost). Axis 2: 2 tuples
+	// (Actual, Budget). Expected: 2*2 = 4 virtual rows; cells at ordinals
+	// 0,1 (Actual/Rev, Actual/Cost), 2,3 (Budget/Rev, Budget/Cost).
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost", UniqueName: "[Account].[Account].[Cost]"}}},
+			}},
+			{Ordinal: 2, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Actual", UniqueName: "[Version].[Version].[Actual]"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Budget", UniqueName: "[Version].[Version].[Budget]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 100.0},
+			{Ordinal: 1, Value: 50.0},
+			{Ordinal: 2, Value: 110.0},
+			{Ordinal: 3, Value: 55.0},
+		},
+	}
+	layout := buildCellsetLayout(resp)
+	if layout == nil {
+		t.Fatal("expected non-nil layout")
+	}
+	if len(layout.RowCells) != 4 {
+		t.Fatalf("expected 4 rows (2x2 flatten), got %d", len(layout.RowCells))
+	}
+	// Verify each row's (Account, Version) members + cell value.
+	// Flat row index r decomposes innermost-first: i_1 = r % 2 (Account),
+	// i_2 = r / 2 (Version). Expected sequence:
+	//   r=0: (Revenue, Actual)  -> 100
+	//   r=1: (Cost,    Actual)  -> 50
+	//   r=2: (Revenue, Budget)  -> 110
+	//   r=3: (Cost,    Budget)  -> 55
+	wantMembers := [][]string{
+		{"Revenue", "Actual"},
+		{"Cost", "Actual"},
+		{"Revenue", "Budget"},
+		{"Cost", "Budget"},
+	}
+	wantCells := []float64{100, 50, 110, 55}
+	for r := 0; r < 4; r++ {
+		if layout.RowMembers[r][0] != wantMembers[r][0] || layout.RowMembers[r][1] != wantMembers[r][1] {
+			t.Errorf("row %d members = %v, want %v", r, layout.RowMembers[r], wantMembers[r])
+		}
+		got, ok := layout.RowCells[r][0].(float64)
+		if !ok || got != wantCells[r] {
+			t.Errorf("row %d cell = %v, want %v", r, layout.RowCells[r][0], wantCells[r])
+		}
+	}
+}
+
+func TestWriteCSVWithTitleAxis(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	captureAll(t, func() {
+		if err := writeCSV(cellsetWithTitle(), outFile, false); err != nil {
+			t.Fatalf("writeCSV error: %v", err)
+		}
+	})
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read CSV: %v", err)
+	}
+	records, err := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	// Axis 1 (Revenue, Cost) × axis 2 single-tuple (Actual) = 2 data rows.
+	if len(records) != 3 {
+		t.Fatalf("expected 3 rows (header + 2 data), got %d", len(records))
+	}
+	// Header: [Account], [Version], Jan, Feb
+	wantHeaders := []string{"[Account]", "[Version]", "Jan", "Feb"}
+	for i, h := range wantHeaders {
+		if records[0][i] != h {
+			t.Errorf("header[%d] = %q, want %q", i, records[0][i], h)
+		}
+	}
+	// Every data row should have "Actual" in the [Version] column (index 1).
+	for r := 1; r < len(records); r++ {
+		if records[r][1] != "Actual" {
+			t.Errorf("row %d col [Version] = %q, want Actual", r, records[r][1])
+		}
+	}
+}
+
+func TestWriteCSVScalar(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	resp := model.CellsetResponse{
+		Axes:  nil,
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 42.5}},
+	}
+	captureAll(t, func() {
+		if err := writeCSV(resp, outFile, false); err != nil {
+			t.Fatalf("writeCSV error: %v", err)
+		}
+	})
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read CSV: %v", err)
+	}
+	records, err := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 rows (header + 1 data), got %d", len(records))
+	}
+	if records[0][0] != "Value" {
+		t.Errorf("header = %q, want Value", records[0][0])
+	}
+	if records[1][0] != "42.5" {
+		t.Errorf("value = %q, want 42.5", records[1][0])
+	}
+}
+
+func TestWriteCSVSingleAxis(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 10.0},
+			{Ordinal: 1, Value: 20.0},
+		},
+	}
+	captureAll(t, func() {
+		if err := writeCSV(resp, outFile, false); err != nil {
+			t.Fatalf("writeCSV error: %v", err)
+		}
+	})
+	data, _ := os.ReadFile(outFile)
+	records, _ := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if len(records) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(records))
+	}
+	wantHeaders := []string{"Jan", "Feb"}
+	for i, h := range wantHeaders {
+		if records[0][i] != h {
+			t.Errorf("header[%d] = %q, want %q", i, records[0][i], h)
+		}
+	}
+	wantVals := []string{"10", "20"}
+	for i, v := range wantVals {
+		if records[1][i] != v {
+			t.Errorf("val[%d] = %q, want %q", i, records[1][i], v)
+		}
+	}
+}
+
+func TestWriteCSVMultiTupleHigherAxis(t *testing.T) {
+	// Reuse TestPrintCellsetTableMultiTupleHigherAxisFlattens fixture inline.
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Cost", UniqueName: "[Account].[Account].[Cost]"}}},
+			}},
+			{Ordinal: 2, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Actual", UniqueName: "[Version].[Version].[Actual]"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Budget", UniqueName: "[Version].[Version].[Budget]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 100.0},
+			{Ordinal: 1, Value: 50.0},
+			{Ordinal: 2, Value: 110.0},
+			{Ordinal: 3, Value: 55.0},
+		},
+	}
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	captureAll(t, func() {
+		if err := writeCSV(resp, outFile, false); err != nil {
+			t.Fatalf("writeCSV error: %v", err)
+		}
+	})
+	data, _ := os.ReadFile(outFile)
+	records, _ := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if len(records) != 5 { // 1 header + 4 data rows (2x2 flatten)
+		t.Fatalf("expected 5 rows, got %d\n%s", len(records), string(data))
+	}
+}
+
+func TestWriteCSVNoHeaderStillEmitsSlicerCols(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	captureAll(t, func() {
+		if err := writeCSV(cellsetWithTitle(), outFile, true); err != nil {
+			t.Fatalf("writeCSV error: %v", err)
+		}
+	})
+	data, _ := os.ReadFile(outFile)
+	records, _ := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if len(records) != 2 { // 2 data rows (Revenue, Cost), no header
+		t.Fatalf("expected 2 data rows (no header), got %d", len(records))
+	}
+	// Second column ([Version] slicer) must still hold "Actual" on every row.
+	for r, row := range records {
+		if row[1] != "Actual" {
+			t.Errorf("row %d slicer col = %q, want Actual (noHeader must still emit slicer data)", r, row[1])
+		}
+	}
+}
+
+func TestCellsetToRecordsWithTitleAxis(t *testing.T) {
+	records := cellsetToRecords(cellsetWithTitle())
+	// Axis 1 (Revenue, Cost) × axis 2 single-tuple (Actual) = 2 records.
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	first := records[0]
+	if first["[Version]"] != "Actual" {
+		t.Errorf("record[0][[Version]] = %v, want Actual", first["[Version]"])
+	}
+	if first["[Account]"] != "Revenue" {
+		t.Errorf("record[0][[Account]] = %v, want Revenue", first["[Account]"])
+	}
+	if first["Jan"].(float64) != 100.0 {
+		t.Errorf("record[0][Jan] = %v, want 100.0", first["Jan"])
+	}
+}
+
+func TestCellsetToRecordsScalar(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes:  nil,
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 42.5}},
+	}
+	records := cellsetToRecords(resp)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0]["Value"].(float64) != 42.5 {
+		t.Errorf("Value = %v, want 42.5", records[0]["Value"])
+	}
+}
+
+func TestCellsetToRecordsSingleAxis(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 10.0},
+			{Ordinal: 1, Value: 20.0},
+		},
+	}
+	records := cellsetToRecords(resp)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0]["Jan"].(float64) != 10.0 {
+		t.Errorf("Jan = %v, want 10.0", records[0]["Jan"])
+	}
+	if records[0]["Feb"].(float64) != 20.0 {
+		t.Errorf("Feb = %v, want 20.0", records[0]["Feb"])
+	}
+}
+
+func TestCellsetToRecordsDuplicateColumnHeadersDoNotOverwrite(t *testing.T) {
+	// Two column tuples render to the same joined header "Jan / Actual".
+	// Disambiguation should give "Jan / Actual" and "Jan / Actual(2)"; both
+	// cell values must be retained in the record.
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}, {Name: "Actual"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Jan"}, {Name: "Actual"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 100.0},
+			{Ordinal: 1, Value: 200.0},
+		},
+	}
+	records := cellsetToRecords(resp)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	rec := records[0]
+	if rec["Jan / Actual"].(float64) != 100.0 {
+		t.Errorf("first dup key value = %v, want 100.0", rec["Jan / Actual"])
+	}
+	if rec["Jan / Actual(2)"].(float64) != 200.0 {
+		t.Errorf("second dup key value = %v, want 200.0 (ensure no overwrite)", rec["Jan / Actual(2)"])
+	}
+}
+
+func TestCellsetToRecordsRowColCollisionDisambiguated(t *testing.T) {
+	// Row-dim label [Period] (from UniqueName) collides with a column
+	// header also "[Period]" (a tuple of a single member named "[Period]").
+	// After global disambiguation they must be distinct keys.
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "[Period]"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan", UniqueName: "[Period].[Period].[Jan]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 7.0}},
+	}
+	records := cellsetToRecords(resp)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	rec := records[0]
+	// Row-dim label comes first in concat order, so it keeps "[Period]";
+	// column header becomes "[Period](2)".
+	if _, ok := rec["[Period]"]; !ok {
+		t.Errorf("expected key [Period] (row-dim), got keys: %v", keys(rec))
+	}
+	if _, ok := rec["[Period](2)"]; !ok {
+		t.Errorf("expected key [Period](2) (disambiguated col), got keys: %v", keys(rec))
+	}
+}
+
+func keys(m map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestWriteXLSXPreservesNumericTypes(t *testing.T) {
+	// excelize GetCellType returns CellTypeUnset (the default) for plain
+	// numeric cells — numeric storage in XLSX XML has no explicit type
+	// attribute. The distinguishing test is: a SharedString-typed cell
+	// would contain an index reference, while a numeric cell contains
+	// the value directly. We verify by contrast: set one cell as
+	// SetCellStr and confirm its type differs from a numeric cell.
+	outFile := filepath.Join(t.TempDir(), "out.xlsx")
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 123.45}},
+	}
+	captureAll(t, func() {
+		if err := writeXLSX(resp, outFile, false); err != nil {
+			t.Fatalf("writeXLSX error: %v", err)
+		}
+	})
+	f, err := excelize.OpenFile(outFile)
+	if err != nil {
+		t.Fatalf("open xlsx: %v", err)
+	}
+	defer f.Close()
+	// Value must round-trip exactly as numeric string (no string quoting).
+	b2, err := f.GetCellValue("Sheet1", "B2")
+	if err != nil {
+		t.Fatalf("GetCellValue B2: %v", err)
+	}
+	if b2 != "123.45" {
+		t.Errorf("B2 = %q, want 123.45", b2)
+	}
+	// Numeric cells must NOT be stored as SharedString (which would indicate
+	// stringification). CellTypeUnset or CellTypeNumber are both acceptable
+	// numeric storage indicators.
+	t2, _ := f.GetCellType("Sheet1", "B2")
+	if t2 == excelize.CellTypeSharedString || t2 == excelize.CellTypeInlineString {
+		t.Errorf("B2 stored as string type %v, want numeric", t2)
+	}
+}
+
+func TestWriteXLSXWithTitleAxis(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "out.xlsx")
+	captureAll(t, func() {
+		if err := writeXLSX(cellsetWithTitle(), outFile, false); err != nil {
+			t.Fatalf("writeXLSX error: %v", err)
+		}
+	})
+	f, err := excelize.OpenFile(outFile)
+	if err != nil {
+		t.Fatalf("open xlsx: %v", err)
+	}
+	defer f.Close()
+	// Header row: [Account], [Version], Jan, Feb
+	gotA, _ := f.GetCellValue("Sheet1", "A1")
+	gotB, _ := f.GetCellValue("Sheet1", "B1")
+	if gotA != "[Account]" {
+		t.Errorf("A1 = %q, want [Account]", gotA)
+	}
+	if gotB != "[Version]" {
+		t.Errorf("B1 = %q, want [Version]", gotB)
+	}
+	// Data row 2: Revenue, Actual, 100, 200
+	gotB2, _ := f.GetCellValue("Sheet1", "B2")
+	if gotB2 != "Actual" {
+		t.Errorf("B2 = %q, want Actual (slicer constant)", gotB2)
+	}
+}
+
+func TestExportViewEndpointIncludesUniqueName(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+
+	var capturedPath string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.RawQuery + "?" + r.URL.Path
+		// keep previous format for captured comparison:
+		capturedPath = r.URL.Path + "?" + r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(cellsetResponseJSON())
+	})
+
+	captureAll(t, func() {
+		if err := runExport(exportCmd, []string{"MyCube"}); err != nil {
+			t.Fatalf("runExport error: %v", err)
+		}
+	})
+
+	if !strings.Contains(capturedPath, "Members($select=Name,UniqueName)") {
+		t.Errorf("view endpoint should request UniqueName, got: %s", capturedPath)
+	}
+}
+
+func TestExportMDXEndpointIncludesUniqueName(t *testing.T) {
+	resetCmdFlags(t)
+	exportMDX = "SELECT {[X]} ON 0 FROM [C]"
+
+	// Capture the FIRST request (ExecuteMDX); later requests (cells page
+	// fetch, cellset cleanup DELETE) should not overwrite.
+	var firstPath string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if firstPath == "" {
+			firstPath = r.URL.Path + "?" + r.URL.RawQuery
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "ExecuteMDX") {
+			resp := model.CellsetResponse{
+				ID: "cs1",
+				Axes: []model.CellsetAxis{
+					{Ordinal: 0, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "X"}}},
+					}},
+					{Ordinal: 1, Tuples: []model.CellsetTuple{
+						{Ordinal: 0, Members: []model.CellsetMember{{Name: "R"}}},
+					}},
+				},
+				Cells: []model.CellsetCell{{Ordinal: 0, Value: 1.0}},
+			}
+			data, _ := json.Marshal(resp)
+			w.Write(data)
+			return
+		}
+		// Cells page fetch: return an empty value array so paging terminates.
+		w.Write([]byte(`{"value":[]}`))
+	})
+
+	captureAll(t, func() {
+		_ = runExport(exportCmd, []string{})
+	})
+
+	if !strings.Contains(firstPath, "Members($select=Name,UniqueName)") {
+		t.Errorf("MDX endpoint should request UniqueName, got: %s", firstPath)
+	}
+}
+
+func TestRawJSONOutputPreservesUniqueName(t *testing.T) {
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan", UniqueName: "[Period].[Period].[Jan]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{{Ordinal: 0, Value: 1.0}},
+	}
+	got := captureStdout(t, func() { output.PrintJSON(resp) })
+	// output.PrintJSON uses indent with space after colon.
+	if !strings.Contains(got, `"UniqueName": "[Period].[Period].[Jan]"`) {
+		t.Errorf("raw JSON should include UniqueName, got:\n%s", got)
+	}
+}
+
+func TestRunExportScalarCSVFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := model.CellsetResponse{
+			Axes:  nil,
+			Cells: []model.CellsetCell{{Ordinal: 0, Value: 42.5}},
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
+
+	captureAll(t, func() {
+		if err := runExport(exportCmd, []string{"C"}); err != nil {
+			t.Fatalf("runExport error: %v", err)
+		}
+	})
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	records, _ := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if len(records) != 2 || records[0][0] != "Value" || records[1][0] != "42.5" {
+		t.Errorf("unexpected csv:\n%s", string(data))
+	}
+}
+
+func TestRunExportSingleAxisCSVFile(t *testing.T) {
+	resetCmdFlags(t)
+	exportView = "Default"
+	outFile := filepath.Join(t.TempDir(), "out.csv")
+	exportOut = outFile
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := model.CellsetResponse{
+			Axes: []model.CellsetAxis{
+				{Ordinal: 0, Tuples: []model.CellsetTuple{
+					{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+					{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+				}},
+			},
+			Cells: []model.CellsetCell{
+				{Ordinal: 0, Value: 10.0},
+				{Ordinal: 1, Value: 20.0},
+			},
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
+
+	captureAll(t, func() {
+		if err := runExport(exportCmd, []string{"C"}); err != nil {
+			t.Fatalf("runExport error: %v", err)
+		}
+	})
+	data, _ := os.ReadFile(outFile)
+	records, _ := csv.NewReader(strings.NewReader(string(data))).ReadAll()
+	if len(records) != 2 {
+		t.Fatalf("expected 2 rows, got %d:\n%s", len(records), string(data))
+	}
+	if records[0][0] != "Jan" || records[0][1] != "Feb" {
+		t.Errorf("header = %v, want [Jan Feb]", records[0])
+	}
+	if records[1][0] != "10" || records[1][1] != "20" {
+		t.Errorf("values = %v, want [10 20]", records[1])
 	}
 }
