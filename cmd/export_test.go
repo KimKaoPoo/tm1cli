@@ -2496,6 +2496,38 @@ func TestPrintCellsetTableFallsBackToDimN(t *testing.T) {
 	}
 }
 
+func TestPrintCellsetTableSingleRowTwoAxisDoesNotPromoteRowDim(t *testing.T) {
+	// A 2-axis cellset with exactly 1 row tuple previously rendered the
+	// row-dim as a column. Slicer promotion must only apply to title axes
+	// (axes >= 2), not to axis 1's row-dim — even when it's trivially
+	// constant.
+	resp := model.CellsetResponse{
+		Axes: []model.CellsetAxis{
+			{Ordinal: 0, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Jan"}}},
+				{Ordinal: 1, Members: []model.CellsetMember{{Name: "Feb"}}},
+			}},
+			{Ordinal: 1, Tuples: []model.CellsetTuple{
+				{Ordinal: 0, Members: []model.CellsetMember{{Name: "Revenue", UniqueName: "[Account].[Account].[Revenue]"}}},
+			}},
+		},
+		Cells: []model.CellsetCell{
+			{Ordinal: 0, Value: 100.0},
+			{Ordinal: 1, Value: 200.0},
+		},
+	}
+	got := captureStdout(t, func() { printCellsetTable(resp) })
+	if strings.Contains(got, "Slicer:") {
+		t.Errorf("2-axis single-row cellset should not emit Slicer preamble, got:\n%s", got)
+	}
+	if !strings.Contains(got, "[Account]") {
+		t.Errorf("row-dim should remain as a column header, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Revenue") {
+		t.Errorf("row member should render as data, got:\n%s", got)
+	}
+}
+
 func TestPrintCellsetTableMultiTupleHigherAxisFlattens(t *testing.T) {
 	// Axis 0: 1 col (Jan). Axis 1: 2 rows (Revenue, Cost). Axis 2: 2 tuples
 	// (Actual, Budget). Expected: 2*2 = 4 virtual rows; cells at ordinals

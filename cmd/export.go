@@ -435,9 +435,13 @@ func buildCellsetLayout(resp model.CellsetResponse) *cellsetLayout {
 
 	var rowLabels []string
 	axisSizes := make([]int, len(rowAxes))
+	axis1Width := 0 // number of row-dim columns contributed by axis 1 (the true row axis)
 	for k, a := range rowAxes {
 		axisSizes[k] = len(a.Tuples)
 		mc := len(a.Tuples[0].Members)
+		if k == 0 {
+			axis1Width = mc
+		}
 		rowLabels = append(rowLabels, buildRowLabelsForAxis(a, mc)...)
 	}
 	colHeaders := buildColHeaders(colAxis)
@@ -480,9 +484,12 @@ func buildCellsetLayout(resp model.CellsetResponse) *cellsetLayout {
 		rowCells[r] = rc
 	}
 
+	// Only columns from title axes (axes >= 2) are eligible for slicer
+	// promotion in table mode — axis 1's row-dim always renders as a row
+	// column even when it happens to hold a single value.
 	constantCols := make([]bool, len(rowLabels))
 	if totalRows > 0 {
-		for c := range rowLabels {
+		for c := axis1Width; c < len(rowLabels); c++ {
 			allSame := true
 			first := rowMembers[0][c]
 			for r := 1; r < totalRows; r++ {
