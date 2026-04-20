@@ -80,6 +80,27 @@ func TestCellsetMemberJSON(t *testing.T) {
 	}
 }
 
+func TestCellsetMemberUniqueNameJSON(t *testing.T) {
+	m := CellsetMember{Name: "Jan", UniqueName: "[Period].[Period].[Jan]"}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	want := `{"Name":"Jan","UniqueName":"[Period].[Period].[Jan]"}`
+	if string(data) != want {
+		t.Errorf("Marshal = %s, want %s", data, want)
+	}
+
+	var got CellsetMember
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if got != m {
+		t.Errorf("Round-trip = %+v, want %+v", got, m)
+	}
+}
+
 func TestCellsetTupleJSON(t *testing.T) {
 	tuple := CellsetTuple{
 		Ordinal: 0,

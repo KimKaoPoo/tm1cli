@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"tm1cli/internal/client"
 	"tm1cli/internal/model"
@@ -95,7 +96,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 }
 
 func runViewExport(cl *client.Client, cubeName string, jsonMode bool) error {
-	endpoint := fmt.Sprintf("Cubes('%s')/Views('%s')/tm1.Execute?$expand=Axes($expand=Tuples($expand=Members($select=Name))),Cells($select=Value,Ordinal)", url.PathEscape(cubeName), url.PathEscape(exportView))
+	endpoint := fmt.Sprintf("Cubes('%s')/Views('%s')/tm1.Execute?$expand=Axes($expand=Tuples($expand=Members($select=Name,UniqueName))),Cells($select=Value,Ordinal)", url.PathEscape(cubeName), url.PathEscape(exportView))
 
 	data, err := cl.Post(endpoint, map[string]interface{}{})
 	if err != nil {
@@ -114,7 +115,7 @@ func runViewExport(cl *client.Client, cubeName string, jsonMode bool) error {
 
 func runMDXExport(cl *client.Client, jsonMode bool) error {
 	// Step 1: Execute MDX — expand axes only, fetch cells separately for pagination
-	endpoint := "ExecuteMDX?$expand=Axes($expand=Tuples($expand=Members($select=Name)))"
+	endpoint := "ExecuteMDX?$expand=Axes($expand=Tuples($expand=Members($select=Name,UniqueName)))"
 	payload := map[string]interface{}{"MDX": exportMDX}
 
 	data, err := cl.Post(endpoint, payload)
@@ -222,55 +223,357 @@ func outputCellset(resp model.CellsetResponse, jsonMode bool) error {
 	return nil
 }
 
-// cellsetToRecords converts a CellsetResponse into a flat array of record maps.
-// Row dimension members become DIM1, DIM2, etc. Column headers become value keys.
-func cellsetToRecords(resp model.CellsetResponse) []map[string]interface{} {
-	if len(resp.Axes) < 2 {
-		return []map[string]interface{}{}
+// cellsetLayout is the canonical flattened representation shared by all writers.
+// Headers[i] and RowMembers[r][i] (for i<NumRowDims) or RowCells[r][i-NumRowDims]
+// (for i>=NumRowDims) are aligned positionally.
+type cellsetLayout struct {
+	Headers     []string
+	RowMembers  [][]string
+	RowCells    [][]interface{}
+	NumRowDims  int
+	ConstantCol []bool
+
+	Scalar      bool
+	ScalarValue interface{}
+	SingleAxis  bool
+}
+
+// parseBracketSegments splits "[A].[B].[C]" into ["A","B","C"], honoring the
+// TM1 MDX escape where "]]" inside brackets represents a literal "]".
+// Returns nil on malformed input.
+func parseBracketSegments(s string) []string {
+	var out []string
+	i := 0
+	for i < len(s) {
+		if s[i] != '[' {
+			return nil
+		}
+		i++
+		var b strings.Builder
+		for {
+			if i >= len(s) {
+				return nil
+			}
+			if s[i] == ']' {
+				if i+1 < len(s) && s[i+1] == ']' {
+					b.WriteByte(']')
+					i += 2
+					continue
+				}
+				break
+			}
+			b.WriteByte(s[i])
+			i++
+		}
+		out = append(out, b.String())
+		i++
+		if i < len(s) {
+			if s[i] != '.' {
+				return nil
+			}
+			i++
+		}
 	}
+	return out
+}
 
-	colAxis := resp.Axes[0]
-	rowAxis := resp.Axes[1]
-
-	numCols := len(colAxis.Tuples)
-	if numCols == 0 {
-		return []map[string]interface{}{}
+// deriveDimensionLabel returns a human-readable bracketed label from a
+// UniqueName. Returns "" if the input is unparseable; the caller then
+// falls back to DIM{N}.
+//
+//	"[Period].[Period].[Jan]" -> "[Period]"
+//	"[Period].[FY].[2024]"    -> "[Period:FY]"
+//	"[Version].[Actual]"      -> "[Version]"
+func deriveDimensionLabel(uniqueName string) string {
+	segs := parseBracketSegments(uniqueName)
+	switch len(segs) {
+	case 0, 1:
+		return ""
+	case 2:
+		return "[" + segs[0] + "]"
+	default:
+		if segs[0] == segs[1] {
+			return "[" + segs[0] + "]"
+		}
+		return "[" + segs[0] + ":" + segs[1] + "]"
 	}
+}
 
-	// Build column header names
-	colHeaders := make([]string, numCols)
-	for i, tuple := range colAxis.Tuples {
-		names := make([]string, len(tuple.Members))
-		for j, m := range tuple.Members {
+// sortedAxes returns resp.Axes sorted by Ordinal ascending. Duplicate ordinals
+// are dropped (first occurrence kept) and a warning is emitted.
+func sortedAxes(resp model.CellsetResponse) []model.CellsetAxis {
+	axes := make([]model.CellsetAxis, len(resp.Axes))
+	copy(axes, resp.Axes)
+	sort.SliceStable(axes, func(i, j int) bool { return axes[i].Ordinal < axes[j].Ordinal })
+
+	seen := make(map[int]bool, len(axes))
+	out := axes[:0]
+	for _, a := range axes {
+		if seen[a.Ordinal] {
+			output.PrintWarning(fmt.Sprintf("duplicate axis ordinal %d; dropping duplicate", a.Ordinal))
+			continue
+		}
+		seen[a.Ordinal] = true
+		out = append(out, a)
+	}
+	return out
+}
+
+// disambiguateLabels returns a copy where duplicate labels gain a "(N)" suffix
+// for their second, third, etc. occurrences. Preserves positional alignment.
+func disambiguateLabels(labels []string) []string {
+	counts := make(map[string]int, len(labels))
+	out := make([]string, len(labels))
+	for i, lbl := range labels {
+		counts[lbl]++
+		if counts[lbl] == 1 {
+			out[i] = lbl
+		} else {
+			out[i] = fmt.Sprintf("%s(%d)", lbl, counts[lbl])
+		}
+	}
+	return out
+}
+
+// buildColHeaders joins multi-member column tuples with " / ".
+func buildColHeaders(colAxis model.CellsetAxis) []string {
+	out := make([]string, len(colAxis.Tuples))
+	for i, t := range colAxis.Tuples {
+		names := make([]string, len(t.Members))
+		for j, m := range t.Members {
 			names[j] = m.Name
 		}
-		colHeaders[i] = strings.Join(names, " / ")
+		out[i] = strings.Join(names, " / ")
 	}
+	return out
+}
 
-	// Index cells by ordinal
-	cellsByOrdinal := make(map[int]interface{}, len(resp.Cells))
-	for _, cell := range resp.Cells {
-		cellsByOrdinal[cell.Ordinal] = cell.Value
+// buildRowLabelsForAxis derives row-dim labels for a single axis, falling
+// back to DIM{N} when UniqueName is absent or unparseable. Global
+// disambiguation (via disambiguateLabels) happens after all axes' labels
+// are concatenated.
+func buildRowLabelsForAxis(a model.CellsetAxis, memberCount int) []string {
+	out := make([]string, memberCount)
+	var first model.CellsetTuple
+	if len(a.Tuples) > 0 {
+		first = a.Tuples[0]
 	}
-
-	// Build records
-	records := make([]map[string]interface{}, 0, len(rowAxis.Tuples))
-	for r, tuple := range rowAxis.Tuples {
-		record := make(map[string]interface{}, len(tuple.Members)+numCols)
-		for d, m := range tuple.Members {
-			record[fmt.Sprintf("DIM%d", d+1)] = m.Name
+	for i := 0; i < memberCount; i++ {
+		lbl := ""
+		if i < len(first.Members) {
+			lbl = deriveDimensionLabel(first.Members[i].UniqueName)
 		}
+		if lbl == "" {
+			lbl = fmt.Sprintf("DIM%d", i+1)
+		}
+		out[i] = lbl
+	}
+	return out
+}
+
+// formatCellValue stringifies a cell value; nil becomes "" (no "<nil>").
+func formatCellValue(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// buildCellsetLayout produces a canonical flattened representation. Returns
+// nil when the response has no meaningful rendering (preserves the existing
+// "No data returned." behavior for empty 2-axis cases).
+func buildCellsetLayout(resp model.CellsetResponse) *cellsetLayout {
+	axes := sortedAxes(resp)
+
+	if len(axes) == 0 {
+		var v interface{}
+		if len(resp.Cells) > 0 {
+			v = resp.Cells[0].Value
+		}
+		return &cellsetLayout{
+			Scalar:      true,
+			ScalarValue: v,
+			Headers:     []string{"Value"},
+		}
+	}
+
+	cells := make(map[int]interface{}, len(resp.Cells))
+	for _, c := range resp.Cells {
+		cells[c.Ordinal] = c.Value
+	}
+
+	if len(axes) == 1 {
+		colAxis := axes[0]
+		numCols := len(colAxis.Tuples)
+		if numCols == 0 {
+			return nil
+		}
+		headers := disambiguateLabels(buildColHeaders(colAxis))
+		rowCells := make([]interface{}, numCols)
 		for c := 0; c < numCols; c++ {
-			ordinal := r*numCols + c
-			if v, ok := cellsByOrdinal[ordinal]; ok {
-				record[colHeaders[c]] = v
-			} else {
-				record[colHeaders[c]] = nil
+			rowCells[c] = cells[c]
+		}
+		return &cellsetLayout{
+			SingleAxis: true,
+			Headers:    headers,
+			RowMembers: [][]string{{}},
+			RowCells:   [][]interface{}{rowCells},
+		}
+	}
+
+	colAxis := axes[0]
+	rowAxes := axes[1:]
+	numCols := len(colAxis.Tuples)
+	if numCols == 0 {
+		return nil
+	}
+	for _, a := range rowAxes {
+		if len(a.Tuples) == 0 {
+			return nil
+		}
+	}
+
+	var rowLabels []string
+	axisSizes := make([]int, len(rowAxes))
+	axis1Width := 0 // number of row-dim columns contributed by axis 1 (the true row axis)
+	for k, a := range rowAxes {
+		axisSizes[k] = len(a.Tuples)
+		mc := len(a.Tuples[0].Members)
+		if k == 0 {
+			axis1Width = mc
+		}
+		rowLabels = append(rowLabels, buildRowLabelsForAxis(a, mc)...)
+	}
+	colHeaders := buildColHeaders(colAxis)
+
+	combined := make([]string, 0, len(rowLabels)+len(colHeaders))
+	combined = append(combined, rowLabels...)
+	combined = append(combined, colHeaders...)
+	all := disambiguateLabels(combined)
+	numRowDims := len(rowLabels)
+	rowLabels = all[:numRowDims]
+	colHeaders = all[numRowDims:]
+
+	totalRows := 1
+	for _, sz := range axisSizes {
+		totalRows *= sz
+	}
+
+	rowMembers := make([][]string, totalRows)
+	rowCells := make([][]interface{}, totalRows)
+	for r := 0; r < totalRows; r++ {
+		mem := make([]string, 0, len(rowLabels))
+		rem := r
+		ord := 0
+		stride := numCols
+		for k, a := range rowAxes {
+			idx := rem % axisSizes[k]
+			rem /= axisSizes[k]
+			ord += idx * stride
+			stride *= axisSizes[k]
+			for _, m := range a.Tuples[idx].Members {
+				mem = append(mem, m.Name)
 			}
 		}
-		records = append(records, record)
+		rowMembers[r] = mem
+
+		rc := make([]interface{}, numCols)
+		for c := 0; c < numCols; c++ {
+			rc[c] = cells[ord+c]
+		}
+		rowCells[r] = rc
 	}
 
+	// Only columns from title axes (axes >= 2) are eligible for slicer
+	// promotion in table mode — axis 1's row-dim always renders as a row
+	// column even when it happens to hold a single value.
+	constantCols := make([]bool, len(rowLabels))
+	if totalRows > 0 {
+		for c := axis1Width; c < len(rowLabels); c++ {
+			allSame := true
+			first := rowMembers[0][c]
+			for r := 1; r < totalRows; r++ {
+				if rowMembers[r][c] != first {
+					allSame = false
+					break
+				}
+			}
+			constantCols[c] = allSame
+		}
+	}
+
+	return &cellsetLayout{
+		Headers:     all,
+		RowMembers:  rowMembers,
+		RowCells:    rowCells,
+		NumRowDims:  numRowDims,
+		ConstantCol: constantCols,
+	}
+}
+
+// layoutToStringRows produces the string-only row form used by CSV.
+func layoutToStringRows(l *cellsetLayout) ([]string, [][]string) {
+	if l.Scalar {
+		return []string{"Value"}, [][]string{{formatCellValue(l.ScalarValue)}}
+	}
+	rows := make([][]string, len(l.RowCells))
+	for r := range l.RowCells {
+		row := make([]string, 0, len(l.Headers))
+		row = append(row, l.RowMembers[r]...)
+		for _, v := range l.RowCells[r] {
+			row = append(row, formatCellValue(v))
+		}
+		rows[r] = row
+	}
+	return l.Headers, rows
+}
+
+// layoutToTypedRows keeps cell values as interface{} for XLSX numeric typing.
+// Row-dim and slicer values remain strings (member names are strings).
+func layoutToTypedRows(l *cellsetLayout) ([]string, [][]interface{}) {
+	if l.Scalar {
+		return []string{"Value"}, [][]interface{}{{l.ScalarValue}}
+	}
+	rows := make([][]interface{}, len(l.RowCells))
+	for r := range l.RowCells {
+		row := make([]interface{}, 0, len(l.Headers))
+		for _, m := range l.RowMembers[r] {
+			row = append(row, m)
+		}
+		for _, v := range l.RowCells[r] {
+			row = append(row, v)
+		}
+		rows[r] = row
+	}
+	return l.Headers, rows
+}
+
+// cellsetToRecords converts a CellsetResponse into a flat array of record
+// maps for JSON-file output. Row-dim labels come from UniqueName when
+// available (falling back to DIM{N}); title axes and multi-tuple higher
+// axes are flattened into row-dim fields. Header collisions are
+// disambiguated globally (e.g., duplicate "[Period]" -> "[Period]", "[Period](2)").
+func cellsetToRecords(resp model.CellsetResponse) []map[string]interface{} {
+	layout := buildCellsetLayout(resp)
+	if layout == nil {
+		return []map[string]interface{}{}
+	}
+	if layout.Scalar {
+		return []map[string]interface{}{{"Value": layout.ScalarValue}}
+	}
+
+	records := make([]map[string]interface{}, 0, len(layout.RowCells))
+	for r := range layout.RowCells {
+		rec := make(map[string]interface{}, len(layout.Headers))
+		for c := 0; c < layout.NumRowDims; c++ {
+			rec[layout.Headers[c]] = layout.RowMembers[r][c]
+		}
+		valHeaders := layout.Headers[layout.NumRowDims:]
+		for c, h := range valHeaders {
+			rec[h] = layout.RowCells[r][c]
+		}
+		records = append(records, rec)
+	}
 	return records
 }
 
@@ -292,83 +595,51 @@ func writeJSONFile(filePath string, data interface{}) error {
 	return nil
 }
 
-// buildCellsetRows converts a CellsetResponse into headers and row data.
-// Returns nil, nil if the response has fewer than 2 axes or 0 column tuples.
-func buildCellsetRows(resp model.CellsetResponse) ([]string, [][]string) {
-	if len(resp.Axes) < 2 {
-		return nil, nil
-	}
-
-	colAxis := resp.Axes[0]
-	rowAxis := resp.Axes[1]
-
-	numCols := len(colAxis.Tuples)
-	if numCols == 0 {
-		return nil, nil
-	}
-
-	// Build column headers
-	colHeaders := make([]string, numCols)
-	for i, tuple := range colAxis.Tuples {
-		names := make([]string, len(tuple.Members))
-		for j, m := range tuple.Members {
-			names[j] = m.Name
-		}
-		colHeaders[i] = strings.Join(names, " / ")
-	}
-
-	// Build row headers count
-	rowMemberCount := 0
-	if len(rowAxis.Tuples) > 0 {
-		rowMemberCount = len(rowAxis.Tuples[0].Members)
-	}
-
-	// Headers
-	headers := make([]string, 0, rowMemberCount+numCols)
-	for i := 0; i < rowMemberCount; i++ {
-		headers = append(headers, fmt.Sprintf("DIM%d", i+1))
-	}
-	headers = append(headers, colHeaders...)
-
-	// Index cells by ordinal for O(1) lookup
-	cellsByOrdinal := make(map[int]interface{}, len(resp.Cells))
-	for _, cell := range resp.Cells {
-		cellsByOrdinal[cell.Ordinal] = cell.Value
-	}
-
-	// Build rows
-	rows := make([][]string, len(rowAxis.Tuples))
-	for r, tuple := range rowAxis.Tuples {
-		row := make([]string, 0, rowMemberCount+numCols)
-		for _, m := range tuple.Members {
-			row = append(row, m.Name)
-		}
-		for c := 0; c < numCols; c++ {
-			ordinal := r*numCols + c
-			val := ""
-			if v, ok := cellsByOrdinal[ordinal]; ok && v != nil {
-				val = fmt.Sprintf("%v", v)
-			}
-			row = append(row, val)
-		}
-		rows[r] = row
-	}
-
-	return headers, rows
-}
-
 func printCellsetTable(resp model.CellsetResponse) {
-	headers, rows := buildCellsetRows(resp)
-	if headers == nil {
+	layout := buildCellsetLayout(resp)
+	if layout == nil {
 		fmt.Println("No data returned.")
 		return
+	}
+
+	if layout.Scalar {
+		fmt.Printf("Result: %s\n", formatCellValue(layout.ScalarValue))
+		return
+	}
+
+	// Promote constant row-dim columns to slicer preamble (table mode only).
+	kept := make([]int, 0, layout.NumRowDims)
+	for c := 0; c < layout.NumRowDims; c++ {
+		if layout.ConstantCol[c] && len(layout.RowMembers) > 0 {
+			fmt.Printf("Slicer: %s = %s\n", layout.Headers[c], layout.RowMembers[0][c])
+		} else {
+			kept = append(kept, c)
+		}
+	}
+
+	headers := make([]string, 0, len(kept)+len(layout.Headers)-layout.NumRowDims)
+	for _, c := range kept {
+		headers = append(headers, layout.Headers[c])
+	}
+	headers = append(headers, layout.Headers[layout.NumRowDims:]...)
+
+	rows := make([][]string, len(layout.RowCells))
+	for r := range layout.RowCells {
+		row := make([]string, 0, len(headers))
+		for _, c := range kept {
+			row = append(row, layout.RowMembers[r][c])
+		}
+		for _, v := range layout.RowCells[r] {
+			row = append(row, formatCellValue(v))
+		}
+		rows[r] = row
 	}
 	output.PrintTable(headers, rows)
 }
 
 func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error {
-	headers, rows := buildCellsetRows(resp)
-	if headers == nil {
+	layout := buildCellsetLayout(resp)
+	if layout == nil {
 		fmt.Fprintln(os.Stderr, "No data to export.")
 		return nil
 	}
@@ -380,19 +651,18 @@ func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error 
 	defer f.Close()
 
 	w := csv.NewWriter(f)
+	headers, rows := layoutToStringRows(layout)
 
 	if !noHeader {
 		if err := w.Write(headers); err != nil {
 			return fmt.Errorf("Cannot write CSV header: %s", err)
 		}
 	}
-
 	for _, row := range rows {
 		if err := w.Write(row); err != nil {
 			return fmt.Errorf("Cannot write CSV row: %s", err)
 		}
 	}
-
 	w.Flush()
 	if err := w.Error(); err != nil {
 		return fmt.Errorf("Cannot write CSV: %s", err)
@@ -403,39 +673,13 @@ func writeCSV(resp model.CellsetResponse, filePath string, noHeader bool) error 
 }
 
 func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error {
-	if len(resp.Axes) < 2 {
+	layout := buildCellsetLayout(resp)
+	if layout == nil {
 		fmt.Fprintln(os.Stderr, "No data to export.")
 		return nil
 	}
 
-	colAxis := resp.Axes[0]
-	rowAxis := resp.Axes[1]
-	numCols := len(colAxis.Tuples)
-	if numCols == 0 {
-		fmt.Fprintln(os.Stderr, "No data to export.")
-		return nil
-	}
-
-	// Build column headers
-	colHeaders := make([]string, numCols)
-	for i, tuple := range colAxis.Tuples {
-		names := make([]string, len(tuple.Members))
-		for j, m := range tuple.Members {
-			names[j] = m.Name
-		}
-		colHeaders[i] = strings.Join(names, " / ")
-	}
-
-	rowMemberCount := 0
-	if len(rowAxis.Tuples) > 0 {
-		rowMemberCount = len(rowAxis.Tuples[0].Members)
-	}
-
-	// Index cells by ordinal to preserve original types
-	cellsByOrdinal := make(map[int]interface{}, len(resp.Cells))
-	for _, cell := range resp.Cells {
-		cellsByOrdinal[cell.Ordinal] = cell.Value
-	}
+	headers, rows := layoutToTypedRows(layout)
 
 	f := excelize.NewFile()
 	defer f.Close()
@@ -443,34 +687,18 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 
 	rowIdx := 1
 	if !noHeader {
-		col := 1
-		for i := 0; i < rowMemberCount; i++ {
-			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
-			f.SetCellValue(sheet, cell, fmt.Sprintf("DIM%d", i+1))
-			col++
-		}
-		for _, h := range colHeaders {
-			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
+		for i, h := range headers {
+			cell, _ := excelize.CoordinatesToCellName(i+1, rowIdx)
 			f.SetCellValue(sheet, cell, h)
-			col++
 		}
 		rowIdx++
 	}
-
-	for r, tuple := range rowAxis.Tuples {
-		col := 1
-		for _, m := range tuple.Members {
-			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
-			f.SetCellValue(sheet, cell, m.Name)
-			col++
-		}
-		for c := 0; c < numCols; c++ {
-			cell, _ := excelize.CoordinatesToCellName(col, rowIdx)
-			ordinal := r*numCols + c
-			if v, ok := cellsByOrdinal[ordinal]; ok && v != nil {
+	for _, row := range rows {
+		for i, v := range row {
+			cell, _ := excelize.CoordinatesToCellName(i+1, rowIdx)
+			if v != nil {
 				f.SetCellValue(sheet, cell, v)
 			}
-			col++
 		}
 		rowIdx++
 	}
@@ -479,7 +707,7 @@ func writeXLSX(resp model.CellsetResponse, filePath string, noHeader bool) error
 		return fmt.Errorf("Cannot write file: %s", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rowAxis.Tuples), filePath)
+	fmt.Fprintf(os.Stderr, "Exported %d rows to %s\n", len(rows), filePath)
 	return nil
 }
 

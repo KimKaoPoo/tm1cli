@@ -16,7 +16,8 @@ type CellsetTuple struct {
 }
 
 type CellsetMember struct {
-	Name string `json:"Name"`
+	Name       string `json:"Name"`
+	UniqueName string `json:"UniqueName,omitempty"`
 }
 
 type CellsetResponse struct {
