@@ -141,7 +141,13 @@ tm1cli config settings --limit 100  # change defaults
 
 ### Password Security
 
-Passwords are stored base64-encoded in the config file (obfuscation only, not encryption). For better security, use the `TM1CLI_PASSWORD` environment variable instead of storing passwords.
+Passwords are stored in the OS keychain (macOS Keychain, Linux secret-service/libsecret, Windows Credential Manager). If the keychain is unavailable (e.g., headless Linux without D-Bus), tm1cli falls back to base64-encoded storage in the config file and prints a warning — base64 is obfuscation only, not encryption.
+
+For CI/CD or headless environments, prefer the `TM1CLI_PASSWORD` environment variable.
+
+**Config file portability:** The `password_ref` in the config file is a machine-local keychain lookup key. Copying `~/.tm1cli/config.json` to another machine will not copy the passwords — re-enter them there via `tm1cli config edit <name>`. Keychain entries are scoped to the OS user account.
+
+**Migrating existing base64 passwords:** Existing configs with base64-stored passwords continue to work unchanged. To move an individual connection into the keychain, run `tm1cli config edit <name>` and re-enter your password at the prompt.
 
 ## Usage
 
@@ -160,10 +166,13 @@ tm1cli cubes --output json          # JSON output
 
 ```bash
 tm1cli dims                                # list dimensions
-tm1cli dims members Period                 # list elements
+tm1cli dims members Period                 # list elements (indented tree by default)
+tm1cli dims members Period --flat          # flat list, no indentation
 tm1cli dims members Region --hierarchy "Alternate Region"
-tm1cli dims members Account --filter "Rev"
+tm1cli dims members Account --filter "Rev" # --filter forces a flat list
 ```
+
+Children of consolidated elements are indented two spaces per level. Use `--flat` for a single-level list. Indentation is disabled automatically with `--filter`, `--count`, and `--output json`.
 
 ### Processes
 
@@ -194,6 +203,18 @@ tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without he
 --version         Print version
 ```
 
+### Shell Completion
+
+Generate a completion script for your shell. Run
+`tm1cli completion <shell> --help` for the install steps.
+
+```bash
+tm1cli completion bash       # bash
+tm1cli completion zsh        # zsh
+tm1cli completion fish       # fish
+tm1cli completion powershell # PowerShell
+```
+
 ## Auth Modes
 
 | Mode | TM1 Security Mode | Usage |
@@ -205,8 +226,10 @@ tm1cli export "Sales" --view "Default" -o data.csv --no-header  # CSV without he
 
 - [x] v0.1.0 — Config, cubes, dims, members, process list/run, export view → table
 - [x] v0.1.1 — Export view → CSV/JSON file
-- [ ] v0.2.0 — MDX export, XLSX output, config edit, CAM auth testing
-- [ ] v0.3.0 — OS keychain, tab completion, advanced features
+- [x] v0.1.2 — Bug fixes for export and URL handling
+- [x] v0.2.0 — MDX export, XLSX output, config edit, views, subsets, diagnostics
+- [x] v0.3.0 — Process dump/load, watch mode
+- [ ] v0.4.0 — OS keychain password storage, consolidated member indentation, cellset parsing
 
 ## License
 

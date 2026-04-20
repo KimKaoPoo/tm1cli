@@ -11,7 +11,18 @@ import (
 	"testing"
 	"tm1cli/internal/config"
 	"tm1cli/internal/model"
+
+	"github.com/zalando/go-keyring"
 )
+
+// TestMain initializes the go-keyring mock provider before any tests run.
+// Without this, tests exercising config add/edit flows would hit the real
+// OS keychain and prompt the user. Mock state is process-global, so tests
+// that touch keychain must not call t.Parallel().
+func TestMain(m *testing.M) {
+	keyring.MockInit()
+	os.Exit(m.Run())
+}
 
 // capturedOutput holds captured stdout and stderr.
 type capturedOutput struct {
@@ -177,6 +188,7 @@ func zeroAllFlags() {
 	membersLimit = 0
 	membersAll = false
 	membersCount = false
+	membersFlat = false
 	procListFilter = ""
 	procListLimit = 0
 	procListAll = false
@@ -250,6 +262,36 @@ func elementsJSON(names []string, types []string) []byte {
 			typ = types[i]
 		}
 		resp.Value = append(resp.Value, elem{Name: name, Type: typ})
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// elementsWithComponentsJSON returns JSON for a TM1 Elements response with
+// an expanded Components relation. children maps a parent element name to
+// the ordered list of child element names.
+func elementsWithComponentsJSON(names []string, types []string, children map[string][]string) []byte {
+	type comp struct {
+		Name string `json:"Name"`
+	}
+	type elem struct {
+		Name       string `json:"Name"`
+		Type       string `json:"Type"`
+		Components []comp `json:"Components,omitempty"`
+	}
+	resp := struct {
+		Value []elem `json:"value"`
+	}{}
+	for i, name := range names {
+		typ := "Numeric"
+		if i < len(types) {
+			typ = types[i]
+		}
+		e := elem{Name: name, Type: typ}
+		for _, childName := range children[name] {
+			e.Components = append(e.Components, comp{Name: childName})
+		}
+		resp.Value = append(resp.Value, e)
 	}
 	data, _ := json.Marshal(resp)
 	return data

@@ -2,9 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zalando/go-keyring"
 )
 
 // setTestHome overrides HOME so that globalConfigDir() and globalConfigPath() point to a temp directory,
@@ -935,6 +938,190 @@ func TestConfigSource(t *testing.T) {
 			t.Errorf("ConfigSource() = %q, want %q", cfg.ConfigSource(), SourceGlobal)
 		}
 	})
+}
+
+// --- keychain storage tests ---
+
+func TestStorePassword_UsesKeychainWhenAvailable(t *testing.T) {
+	keyring.MockInit()
+	srv := &ServerConfig{}
+	used, warning := StorePassword(srv, "hunter2")
+	if !used || warning != "" {
+		t.Fatalf("used=%v warning=%q, want used=true warning=\"\"", used, warning)
+	}
+	if srv.Password != "" {
+		t.Errorf("Password = %q, want empty", srv.Password)
+	}
+	if srv.PasswordStorage != PasswordStorageKeychain {
+		t.Errorf("PasswordStorage = %q, want %q", srv.PasswordStorage, PasswordStorageKeychain)
+	}
+	if srv.PasswordRef == "" {
+		t.Error("PasswordRef should be populated")
+	}
+	got, _ := GetKeychainPassword(srv.PasswordRef)
+	if got != "hunter2" {
+		t.Errorf("keychain value = %q, want %q", got, "hunter2")
+	}
+}
+
+func TestStorePassword_FallsBackToBase64OnKeychainFailure(t *testing.T) {
+	t.Cleanup(OverrideKeychainSet(func(service, user, password string) error {
+		return errors.New("simulated keychain failure")
+	}))
+	srv := &ServerConfig{}
+	used, warning := StorePassword(srv, "hunter2")
+	if used {
+		t.Errorf("used = true, want false")
+	}
+	if warning == "" {
+		t.Error("warning should not be empty on fallback")
+	}
+	if srv.PasswordStorage != PasswordStorageBase64 {
+		t.Errorf("PasswordStorage = %q, want %q", srv.PasswordStorage, PasswordStorageBase64)
+	}
+	decoded, err := DecodePassword(srv.Password)
+	if err != nil || decoded != "hunter2" {
+		t.Errorf("DecodePassword = %q, %v; want hunter2, nil", decoded, err)
+	}
+	if srv.PasswordRef != "" {
+		t.Errorf("PasswordRef = %q, want empty on fallback", srv.PasswordRef)
+	}
+}
+
+func TestStorePassword_FallbackCleansUpOldKeychainEntry(t *testing.T) {
+	keyring.MockInit()
+	// Seed an existing keychain-backed server.
+	oldRef := "orphan-candidate"
+	if err := SetKeychainPassword(oldRef, "oldpw"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srv := &ServerConfig{PasswordStorage: PasswordStorageKeychain, PasswordRef: oldRef}
+
+	// Inject a keychain failure so StorePassword falls back to base64.
+	t.Cleanup(OverrideKeychainSet(func(service, user, password string) error {
+		return errors.New("simulated keychain failure")
+	}))
+
+	used, _ := StorePassword(srv, "newpw")
+	if used {
+		t.Fatalf("used = true, want false (fallback expected)")
+	}
+
+	// Restore the real Set so we can verify the old entry is gone.
+	// OverrideKeychainSet's cleanup runs after this test, but we need
+	// the real Get semantics now. Since the mock keeps its own map and
+	// only Set was overridden, Get still works against the mock map.
+	if _, err := GetKeychainPassword(oldRef); !errors.Is(err, ErrKeychainNotFound) {
+		t.Errorf("old keychain entry should have been deleted after fallback, err = %v", err)
+	}
+}
+
+func TestGetEffectivePassword_KeychainStorage(t *testing.T) {
+	keyring.MockInit()
+	ref := "test-ref-123"
+	_ = SetKeychainPassword(ref, "kc-password")
+	cfg := &Config{
+		Default: "dev",
+		Servers: map[string]ServerConfig{
+			"dev": {
+				PasswordStorage: PasswordStorageKeychain,
+				PasswordRef:     ref,
+			},
+		},
+	}
+	got, err := cfg.GetEffectivePassword("dev")
+	if err != nil || got != "kc-password" {
+		t.Errorf("got %q, %v; want kc-password, nil", got, err)
+	}
+}
+
+func TestGetEffectivePassword_KeychainMissingReturnsError(t *testing.T) {
+	keyring.MockInit()
+	cfg := &Config{
+		Default: "dev",
+		Servers: map[string]ServerConfig{
+			"dev": {
+				PasswordStorage: PasswordStorageKeychain,
+				PasswordRef:     "nonexistent",
+			},
+		},
+	}
+	_, err := cfg.GetEffectivePassword("dev")
+	if err == nil {
+		t.Fatal("expected error for missing keychain entry, got nil")
+	}
+	if !containsStr(err.Error(), "config edit") {
+		t.Errorf("error = %q, want it to mention 'config edit' for recovery", err.Error())
+	}
+}
+
+func TestGetEffectivePassword_LegacyBase64StillWorks(t *testing.T) {
+	cfg := &Config{
+		Default: "dev",
+		Servers: map[string]ServerConfig{
+			"dev": {
+				Password: EncodePassword("legacypw"),
+				// PasswordStorage left empty (legacy)
+			},
+		},
+	}
+	got, err := cfg.GetEffectivePassword("dev")
+	if err != nil || got != "legacypw" {
+		t.Errorf("got %q, %v; want legacypw, nil", got, err)
+	}
+}
+
+func TestGetEffectivePassword_EnvVarOverridesKeychain(t *testing.T) {
+	t.Setenv("TM1CLI_PASSWORD", "env-wins")
+	keyring.MockInit()
+	cfg := &Config{
+		Default: "dev",
+		Servers: map[string]ServerConfig{
+			"dev": {
+				PasswordStorage: PasswordStorageKeychain,
+				PasswordRef:     "some-ref",
+				// no keychain entry set — env var must short-circuit
+			},
+		},
+	}
+	got, err := cfg.GetEffectivePassword("dev")
+	if err != nil || got != "env-wins" {
+		t.Errorf("got %q, %v; want env-wins, nil", got, err)
+	}
+}
+
+func TestClearStoredPassword_RemovesFromKeychain(t *testing.T) {
+	keyring.MockInit()
+	ref := "clear-ref"
+	_ = SetKeychainPassword(ref, "x")
+	srv := &ServerConfig{PasswordStorage: PasswordStorageKeychain, PasswordRef: ref}
+	if err := ClearStoredPassword(srv); err != nil {
+		t.Fatalf("ClearStoredPassword failed: %v", err)
+	}
+	if _, err := GetKeychainPassword(ref); !errors.Is(err, ErrKeychainNotFound) {
+		t.Errorf("entry should be gone, err = %v", err)
+	}
+}
+
+func TestClearStoredPassword_Base64IsNoOp(t *testing.T) {
+	srv := &ServerConfig{PasswordStorage: PasswordStorageBase64, Password: "xyz"}
+	if err := ClearStoredPassword(srv); err != nil {
+		t.Errorf("Base64 ClearStoredPassword should be no-op, got %v", err)
+	}
+	if srv.Password != "xyz" {
+		t.Errorf("Base64 password should not be modified, got %q", srv.Password)
+	}
+}
+
+func TestNewPasswordRef_UniqueAndValid(t *testing.T) {
+	a := newPasswordRef()
+	b := newPasswordRef()
+	if a == b {
+		t.Error("newPasswordRef should return unique values")
+	}
+	if len(a) != 32 {
+		t.Errorf("len = %d, want 32 hex chars", len(a))
+	}
 }
 
 // containsStr is a simple helper to check string containment.

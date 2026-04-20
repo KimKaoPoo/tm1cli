@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
@@ -493,7 +495,7 @@ func TestDisplayMembers_TableOutput(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 3, 0, false)
+		displayMembers(elements, 3, 0, false, false)
 	})
 
 	// Check headers
@@ -526,7 +528,7 @@ func TestDisplayMembers_JSONOutput(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 2, 0, true)
+		displayMembers(elements, 2, 0, true, false)
 	})
 
 	var parsed []model.Element
@@ -557,7 +559,7 @@ func TestDisplayMembers_CountTable(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 4, 0, false)
+		displayMembers(elements, 4, 0, false, false)
 	})
 
 	expected := "4 members\n"
@@ -576,7 +578,7 @@ func TestDisplayMembers_CountJSON(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 10, 0, true)
+		displayMembers(elements, 10, 0, true, false)
 	})
 
 	var parsed map[string]int
@@ -602,7 +604,7 @@ func TestDisplayMembers_LimitTruncation(t *testing.T) {
 	}
 
 	captured := captureAll(t, func() {
-		displayMembers(elements, 5, 2, false)
+		displayMembers(elements, 5, 2, false, false)
 	})
 
 	// Should show first 2 only
@@ -633,7 +635,7 @@ func TestDisplayMembers_NoSummaryWhenAllShown(t *testing.T) {
 	}
 
 	captured := captureAll(t, func() {
-		displayMembers(elements, 2, 0, false)
+		displayMembers(elements, 2, 0, false, false)
 	})
 
 	if strings.Contains(captured.Stderr, "Showing") {
@@ -653,7 +655,7 @@ func TestDisplayMembers_LimitZeroShowsAll(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 3, 0, false)
+		displayMembers(elements, 3, 0, false, false)
 	})
 
 	for _, e := range elements {
@@ -676,7 +678,7 @@ func TestDisplayMembers_JSONLimitTruncation(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 4, 2, true)
+		displayMembers(elements, 4, 2, true, false)
 	})
 
 	var parsed []model.Element
@@ -694,7 +696,7 @@ func TestDisplayMembers_EmptyElements(t *testing.T) {
 	membersCount = false
 
 	out := captureStdout(t, func() {
-		displayMembers([]model.Element{}, 0, 0, false)
+		displayMembers([]model.Element{}, 0, 0, false, false)
 	})
 
 	// Should still print headers
@@ -717,7 +719,7 @@ func TestDisplayMembers_CountUsesTotalNotLen(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		displayMembers(elements, 42, 0, false)
+		displayMembers(elements, 42, 0, false, false)
 	})
 
 	expected := "42 members\n"
@@ -743,6 +745,865 @@ func TestDisplayDims_CountUsesTotalNotLen(t *testing.T) {
 	expected := "99 dimensions\n"
 	if out != expected {
 		t.Errorf("count output = %q, want %q (should use total parameter)", out, expected)
+	}
+}
+
+// ============================================================
+// buildTree / flattenTree
+// ============================================================
+
+func flatNamesDepths(rows []indentedRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = fmt.Sprintf("%s@%d", r.name, r.depth)
+	}
+	return out
+}
+
+func TestBuildTree_SimpleHierarchy(t *testing.T) {
+	elements := []model.Element{
+		{Name: "Year", Type: "Consolidated", Components: []model.Component{{Name: "Q1"}, {Name: "Q2"}}},
+		{Name: "Q1", Type: "Consolidated", Components: []model.Component{{Name: "Jan"}}},
+		{Name: "Q2", Type: "Consolidated", Components: []model.Component{{Name: "Feb"}}},
+		{Name: "Jan", Type: "Numeric"},
+		{Name: "Feb", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"Year@0", "Q1@1", "Jan@2", "Q2@1", "Feb@2"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTree_AllLeaves(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Numeric"},
+		{Name: "B", Type: "Numeric"},
+		{Name: "C", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"A@0", "B@0", "C@0"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTree_Diamond(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "D", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"A@0", "B@1", "D@2", "C@1", "D@2"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("diamond flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTree_CycleIsGuarded(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "A"}}},
+		{Name: "X", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	names := make(map[string]int)
+	for _, r := range flat {
+		names[r.name]++
+	}
+	if names["X"] != 1 {
+		t.Errorf("X should appear exactly once, got %d: %v", names["X"], flatNamesDepths(flat))
+	}
+	if names["A"] == 0 || names["B"] == 0 {
+		t.Errorf("A and B should both appear, got: %v", flatNamesDepths(flat))
+	}
+	if len(flat) > 10 {
+		t.Errorf("output should be finite and small for a cycle, got %d rows: %v", len(flat), flatNamesDepths(flat))
+	}
+}
+
+func TestBuildTree_PureCycleRendersAllElements(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "A"}}},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	seen := make(map[string]bool)
+	for _, r := range flat {
+		seen[r.name] = true
+	}
+	if !seen["A"] || !seen["B"] {
+		t.Errorf("pure cycle should still render every element; got %v", flatNamesDepths(flat))
+	}
+}
+
+func TestBuildTree_UnknownComponentIgnored(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "Ghost"}}},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"A@0"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("unknown component should be ignored; flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTree_RootOrderPreserved(t *testing.T) {
+	elements := []model.Element{
+		{Name: "C", Type: "Numeric"},
+		{Name: "A", Type: "Numeric"},
+		{Name: "B", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"C@0", "A@0", "B@0"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("root order should follow input; flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTree_PreservesComponentOrder(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "C"}, {Name: "B"}}},
+		{Name: "B", Type: "Numeric"},
+		{Name: "C", Type: "Numeric"},
+	}
+
+	flat := flattenTree(buildTree(elements))
+
+	want := []string{"A@0", "C@1", "B@1"}
+	if !stringSliceEqual(flatNamesDepths(flat), want) {
+		t.Errorf("component order should follow Components slice; flatten = %v, want %v", flatNamesDepths(flat), want)
+	}
+}
+
+func TestBuildTreeBounded_UnderBudgetNoOverflow(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}}},
+		{Name: "B", Type: "Numeric"},
+	}
+
+	_, overflow := buildTreeBounded(elements, 100)
+	if overflow {
+		t.Error("2-node tree should not overflow a 100-node budget")
+	}
+}
+
+func TestBuildTreeBounded_LayeredDiamondOverflows(t *testing.T) {
+	// Build a layered diamond: each layer doubles the render count via
+	// two parents sharing the same two children. 8 layers with ~2 unique
+	// elements each expand to roughly 2^8 = 256 nodes, which blows past
+	// budget=16 but uses only ~16 unique elements.
+	elements := []model.Element{}
+	layers := 8
+	for i := 0; i < layers; i++ {
+		parent := fmt.Sprintf("L%dP", i)
+		left := fmt.Sprintf("L%dA", i+1)
+		right := fmt.Sprintf("L%dB", i+1)
+		elements = append(elements, model.Element{
+			Name:       parent,
+			Type:       "Consolidated",
+			Components: []model.Component{{Name: left}, {Name: right}},
+		})
+		// Each non-leaf child points to the next layer's parent (shared).
+		if i < layers-1 {
+			nextParent := fmt.Sprintf("L%dP", i+1)
+			elements = append(elements,
+				model.Element{Name: left, Type: "Consolidated", Components: []model.Component{{Name: nextParent}}},
+				model.Element{Name: right, Type: "Consolidated", Components: []model.Component{{Name: nextParent}}},
+			)
+		} else {
+			elements = append(elements,
+				model.Element{Name: left, Type: "Numeric"},
+				model.Element{Name: right, Type: "Numeric"},
+			)
+		}
+	}
+
+	_, overflow := buildTreeBounded(elements, 64)
+	if !overflow {
+		t.Error("layered-diamond expansion should overflow a 64-node budget")
+	}
+
+	_, overflow = buildTreeBounded(elements, 0)
+	if overflow {
+		t.Error("unlimited budget (0) should never overflow")
+	}
+}
+
+func TestRunDimsMembers_TreeModeDiamondOverflowErrors(t *testing.T) {
+	resetCmdFlags(t)
+
+	// Build layered diamonds that over-expand past treeRenderCeiling
+	// while keeping unique element count below the gate.
+	names := []string{}
+	types := []string{}
+	children := map[string][]string{}
+	layers := 24 // 2^24 >> 50000
+	for i := 0; i < layers; i++ {
+		parent := fmt.Sprintf("L%dP", i)
+		left := fmt.Sprintf("L%dA", i+1)
+		right := fmt.Sprintf("L%dB", i+1)
+		names = append(names, parent)
+		types = append(types, "Consolidated")
+		children[parent] = []string{left, right}
+		if i == layers-1 {
+			names = append(names, left, right)
+			types = append(types, "Numeric", "Numeric")
+		} else {
+			nextParent := fmt.Sprintf("L%dP", i+1)
+			names = append(names, left, right)
+			types = append(types, "Consolidated", "Consolidated")
+			children[left] = []string{nextParent}
+			children[right] = []string{nextParent}
+		}
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			// Small unique count — gate does not trigger.
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", len(names))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(names, types, children))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"DiamondDim"})
+		if err != errSilent {
+			t.Fatalf("diamond explosion should error with errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "render rows") {
+		t.Errorf("overflow error should mention 'render rows', got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "--flat") {
+		t.Errorf("overflow error should suggest --flat, got stderr: %q", captured.Stderr)
+	}
+}
+
+func TestFlattenTreeCapped_StopsAtCap(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Numeric"},
+		{Name: "D", Type: "Numeric"},
+	}
+	roots := buildTree(elements)
+
+	shown := flattenTreeCapped(roots, 2)
+	if len(shown) != 2 {
+		t.Fatalf("cap=2 should return 2 rows, got %d: %v", len(shown), flatNamesDepths(shown))
+	}
+	want := []string{"A@0", "B@1"}
+	if !stringSliceEqual(flatNamesDepths(shown), want) {
+		t.Errorf("cap=2 DFS preorder = %v, want %v", flatNamesDepths(shown), want)
+	}
+
+	unCapped := flattenTreeCapped(roots, 0)
+	if len(unCapped) != 4 {
+		t.Errorf("cap=0 should walk all rows, got %d: %v", len(unCapped), flatNamesDepths(unCapped))
+	}
+}
+
+func TestTreeStats_CountsRowsAndUnique(t *testing.T) {
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "D", Type: "Numeric"},
+	}
+	roots := buildTree(elements)
+
+	flatTotal, uniqueCount := treeStats(roots)
+	if flatTotal != 5 {
+		t.Errorf("flatTotal = %d, want 5 (A,B,D,C,D)", flatTotal)
+	}
+	if uniqueCount != 4 {
+		t.Errorf("uniqueCount = %d, want 4 (A,B,C,D)", uniqueCount)
+	}
+}
+
+func TestBuildTree_EmptyInput(t *testing.T) {
+	if got := buildTree(nil); len(got) != 0 {
+		t.Errorf("buildTree(nil) = %v, want empty", got)
+	}
+	if got := buildTree([]model.Element{}); len(got) != 0 {
+		t.Errorf("buildTree([]) = %v, want empty", got)
+	}
+	if got := flattenTree(nil); len(got) != 0 {
+		t.Errorf("flattenTree(nil) = %v, want empty", got)
+	}
+}
+
+// ============================================================
+// displayMembers — tree mode
+// ============================================================
+
+func treeFixtureElements() []model.Element {
+	return []model.Element{
+		{Name: "Year", Type: "Consolidated", Components: []model.Component{{Name: "Q1"}, {Name: "Q2"}}},
+		{Name: "Q1", Type: "Consolidated", Components: []model.Component{{Name: "Jan"}}},
+		{Name: "Q2", Type: "Consolidated", Components: []model.Component{{Name: "Feb"}}},
+		{Name: "Jan", Type: "Numeric"},
+		{Name: "Feb", Type: "Numeric"},
+	}
+}
+
+func TestDisplayMembers_TreeIndentation(t *testing.T) {
+	origCount := membersCount
+	defer func() { membersCount = origCount }()
+	membersCount = false
+
+	elements := treeFixtureElements()
+
+	out := captureStdout(t, func() {
+		displayMembers(elements, len(elements), 0, false, true)
+	})
+
+	wantSubstrings := []string{"Year", "  Q1", "    Jan", "  Q2", "    Feb"}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(out, s) {
+			t.Errorf("tree output missing %q; got:\n%s", s, out)
+		}
+	}
+}
+
+func TestDisplayMembers_TreeLimitTruncation(t *testing.T) {
+	origCount := membersCount
+	defer func() { membersCount = origCount }()
+	membersCount = false
+
+	elements := treeFixtureElements()
+
+	captured := captureAll(t, func() {
+		displayMembers(elements, len(elements), 3, false, true)
+	})
+
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Error("output missing Year")
+	}
+	if !strings.Contains(captured.Stdout, "Q1") {
+		t.Error("output missing Q1")
+	}
+	if !strings.Contains(captured.Stdout, "Jan") {
+		t.Error("output missing Jan")
+	}
+	if strings.Contains(captured.Stdout, "Q2") {
+		t.Error("output should NOT contain Q2 (truncated)")
+	}
+	if strings.Contains(captured.Stdout, "Feb") {
+		t.Error("output should NOT contain Feb (truncated)")
+	}
+	if !strings.Contains(captured.Stderr, "Showing 3 of 5 rows") {
+		t.Errorf("stderr should contain tree truncation summary, got: %q", captured.Stderr)
+	}
+}
+
+func TestDisplayMembers_TreeDiamondReportsUniqueCount(t *testing.T) {
+	origCount := membersCount
+	defer func() { membersCount = origCount }()
+	membersCount = false
+
+	elements := []model.Element{
+		{Name: "A", Type: "Consolidated", Components: []model.Component{{Name: "B"}, {Name: "C"}}},
+		{Name: "B", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "C", Type: "Consolidated", Components: []model.Component{{Name: "D"}}},
+		{Name: "D", Type: "Numeric"},
+	}
+
+	captured := captureAll(t, func() {
+		displayMembers(elements, len(elements), 3, false, true)
+	})
+
+	if !strings.Contains(captured.Stderr, "rows") {
+		t.Errorf("summary should say 'rows' in tree mode, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "unique") {
+		t.Errorf("diamond hierarchy should report unique element count, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "4 unique") {
+		t.Errorf("unique count should be 4 (A,B,C,D), got: %q", captured.Stderr)
+	}
+}
+
+func TestDisplayMembers_TreeEmptyElements(t *testing.T) {
+	origCount := membersCount
+	defer func() { membersCount = origCount }()
+	membersCount = false
+
+	out := captureStdout(t, func() {
+		displayMembers([]model.Element{}, 0, 0, false, true)
+	})
+
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "TYPE") {
+		t.Errorf("tree output should still print headers for empty input, got:\n%s", out)
+	}
+}
+
+// ============================================================
+// runDimsMembers — tree mode integration
+// ============================================================
+
+func TestRunDimsMembers_TreeOutputEndToEnd(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("3"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(
+			[]string{"Year", "Q1", "Jan"},
+			[]string{"Consolidated", "Consolidated", "Numeric"},
+			map[string][]string{"Year": {"Q1"}, "Q1": {"Jan"}},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	for _, want := range []string{"Year", "  Q1", "    Jan"} {
+		if !strings.Contains(captured.Stdout, want) {
+			t.Errorf("tree stdout missing %q; got:\n%s", want, captured.Stdout)
+		}
+	}
+}
+
+func TestRunDimsMembers_FlatFlagSkipsExpand(t *testing.T) {
+	resetCmdFlags(t)
+	membersFlat = true
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(
+			[]string{"Year", "Q1", "Jan"},
+			[]string{"Consolidated", "Consolidated", "Numeric"},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("--flat should not send $expand, got query: %s", capturedQuery)
+	}
+	if strings.Contains(captured.Stdout, "  Q1") {
+		t.Errorf("--flat output should not be indented, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunDimsMembers_FilterSkipsExpand(t *testing.T) {
+	resetCmdFlags(t)
+	membersFilter = "q"
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Q1"}, []string{"Consolidated"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("--filter should not send $expand, got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_JSONSkipsExpand(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("--output json should not send $expand, got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_CountSkipsExpand(t *testing.T) {
+	resetCmdFlags(t)
+	membersCount = true
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("--count should not send $expand, got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_TreeModeOverGateFallsBackToFlat(t *testing.T) {
+	// Preserves the pre-PR contract of --all: exceeding the 5000-element
+	// gate no longer hard-errors. The user instead gets flat output with
+	// a warning naming the count and nudging toward --all.
+	resetCmdFlags(t)
+	membersLimit = 50
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", treeElementGate+1)
+			return
+		}
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"X"}, []string{"Numeric"}))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != nil {
+			t.Fatalf("over-gate path should fall back, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("over-gate fallback should emit [warn] on stderr, got: %q", captured.Stderr)
+	}
+	wantCount := fmt.Sprintf("%d", treeElementGate+1)
+	if !strings.Contains(captured.Stderr, wantCount) {
+		t.Errorf("warning should include the element count %s, got stderr: %q", wantCount, captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "over 5000") {
+		t.Errorf("warning should state 'over %d' for clarity, got stderr: %q", treeElementGate, captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "50") || !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("warning should disclose row limit and suggest --all; got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "X") {
+		t.Errorf("fallback should render elements; got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand; got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflight404SurfacesDirectly(t *testing.T) {
+	// Regression: a 404 on the $count preflight must short-circuit to
+	// a "Not found" error. Previously it fell through to the
+	// "cannot verify dimension size" warning, which nudged users
+	// toward --all before the real not-found error showed up.
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"Dimension not found"}`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"NoSuchDim"})
+		if err != errSilent {
+			t.Fatalf("404 preflight should return errSilent, got: %v", err)
+		}
+	})
+
+	if strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("404 preflight must NOT emit the size-verification warning, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("404 preflight should surface the not-found error, got stderr: %q", captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
+	resetCmdFlags(t)
+	membersLimit = 50
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"$count not supported"}`))
+			return
+		}
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
+		if err != nil {
+			t.Fatalf("preflight failure should fall back to flat, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("fallback should emit [warn] on stderr, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "flat output") {
+		t.Errorf("fallback warning should mention flat output, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "50") {
+		t.Errorf("fallback warning should disclose the row limit (50), got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("fallback warning should suggest --all for the full dimension, got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand (tree mode disabled); got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflightFallbackWarnsAboutTruncation(t *testing.T) {
+	// Reviewer-requested regression: $count 500, default limit 50,
+	// dimension has 100 elements — the fallback must disclose the
+	// truncation so users don't silently consume 50/100 rows.
+	resetCmdFlags(t)
+	membersLimit = 50
+
+	names := make([]string, 100)
+	types := make([]string, 100)
+	for i := range names {
+		names[i] = fmt.Sprintf("E%d", i)
+		types[i] = "Numeric"
+	}
+
+	var servedTop int
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"$count unsupported"}`))
+			return
+		}
+		servedTop = len(names)
+		if topParam := r.URL.Query().Get("$top"); topParam != "" {
+			if n, err := strconv.Atoi(topParam); err == nil && n < servedTop {
+				servedTop = n
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(names[:servedTop], types[:servedTop]))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"HundredDim"})
+		if err != nil {
+			t.Fatalf("fallback should succeed, got: %v", err)
+		}
+	})
+
+	if servedTop != 50 {
+		t.Errorf("fallback should still send $top=50 to protect against huge dims, server saw top=%d", servedTop)
+	}
+	if !strings.Contains(captured.Stderr, "50") || !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("fallback warning must disclose the 50-row limit and suggest --all; got: %q", captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_TreeModePreflightNonIntegerFallsBackToFlat(t *testing.T) {
+	resetCmdFlags(t)
+	membersLimit = 25
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"not":"an integer"}`))
+			return
+		}
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Any"})
+		if err != nil {
+			t.Fatalf("non-integer preflight should fall back, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "cannot verify dimension size") {
+		t.Errorf("fallback warning should mention size verification, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "25") {
+		t.Errorf("fallback warning should disclose the row limit (25), got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand; got query: %s", capturedQuery)
+	}
+}
+
+func TestRunDimsMembers_TreeModeAllowsLargeWithAll(t *testing.T) {
+	resetCmdFlags(t)
+	membersAll = true
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%d", treeElementGate+1)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON([]string{"Year"}, []string{"Consolidated"}, nil))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != nil {
+			t.Fatalf("--all should bypass the gate, got error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "Year") {
+		t.Errorf("output should render elements when --all is set, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunDimsMembers_TreeModeQuietBelowThreshold(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("2"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(
+			[]string{"Year", "Q1"},
+			[]string{"Consolidated", "Numeric"},
+			map[string][]string{"Year": {"Q1"}},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Small"})
+		if err != nil {
+			t.Fatalf("below-gate count should not error, got: %v", err)
+		}
+	})
+
+	if strings.Contains(captured.Stderr, "--all") {
+		t.Errorf("small dimensions should not trigger the gate error, got stderr: %q", captured.Stderr)
+	}
+}
+
+func TestRunDimsMembers_FlatModeSkipsCountPreflight(t *testing.T) {
+	resetCmdFlags(t)
+	membersFlat = true
+
+	var countCalled bool
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			countCalled = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON([]string{"Year"}, []string{"Consolidated"}))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if countCalled {
+		t.Error("--flat should skip the $count pre-flight entirely")
+	}
+}
+
+func TestRunDimsMembers_TreeModeOmitsTop(t *testing.T) {
+	resetCmdFlags(t)
+	membersLimit = 10
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("1"))
+			return
+		}
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsWithComponentsJSON(
+			[]string{"Year"},
+			[]string{"Consolidated"},
+			nil,
+		))
+	})
+
+	captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"Period"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "top=") {
+		t.Errorf("tree mode must not send $top (would break hierarchy); got query: %s", capturedQuery)
+	}
+	if !strings.Contains(capturedQuery, "expand") {
+		t.Errorf("tree mode should send $expand; got query: %s", capturedQuery)
 	}
 }
 
@@ -843,6 +1704,11 @@ func TestRunDimsMembers_EndToEnd(t *testing.T) {
 	resetCmdFlags(t)
 
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("3"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON(
 			[]string{"Jan", "Feb", "Mar"},
@@ -877,6 +1743,12 @@ func TestRunDimsMembers_CustomHierarchy(t *testing.T) {
 
 	var capturedPath string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("2"))
+			return
+		}
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON([]string{"East", "West"}, []string{"Numeric", "Numeric"}))
@@ -905,6 +1777,12 @@ func TestRunDimsMembers_DefaultHierarchyMatchesDimName(t *testing.T) {
 
 	var capturedPath string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("1"))
+			return
+		}
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(elementsJSON([]string{"Q1"}, []string{"Consolidated"}))

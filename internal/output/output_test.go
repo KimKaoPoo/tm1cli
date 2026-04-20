@@ -258,6 +258,69 @@ func TestPrintSummary(t *testing.T) {
 	}
 }
 
+func TestPrintTreeSummary(t *testing.T) {
+	tests := []struct {
+		name      string
+		shown     int
+		total     int
+		unique    int
+		wantEmpty bool
+		contains  []string
+	}{
+		{
+			name:      "no output when shown >= total",
+			shown:     5,
+			total:     5,
+			unique:    5,
+			wantEmpty: true,
+		},
+		{
+			name:     "says rows and omits unique when unique == total",
+			shown:    3,
+			total:    10,
+			unique:   10,
+			contains: []string{"Showing 3 of 10 rows", "--filter", "--all"},
+		},
+		{
+			name:     "includes unique-element count when diamonds present",
+			shown:    3,
+			total:    10,
+			unique:   7,
+			contains: []string{"Showing 3 of 10 rows", "7 unique elements"},
+		},
+		{
+			name:     "UniqueElementsUnknown sentinel omits unique clause",
+			shown:    3,
+			total:    10,
+			unique:   UniqueElementsUnknown,
+			contains: []string{"Showing 3 of 10 rows"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := captureStderr(t, func() {
+				PrintTreeSummary(tt.shown, tt.total, tt.unique)
+			})
+
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty output, got: %q", got)
+				}
+				return
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q, got: %s", want, got)
+				}
+			}
+			if tt.unique == tt.total && strings.Contains(got, "unique") {
+				t.Errorf("should not mention 'unique' when unique == total, got: %s", got)
+			}
+		})
+	}
+}
+
 func TestPrintError(t *testing.T) {
 	tests := []struct {
 		name     string

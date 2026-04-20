@@ -35,3 +35,5 @@ dist/
 
 # Implementation plan (temporary)
 IMPLEMENTATION_PLAN.md
+
+.envrc
