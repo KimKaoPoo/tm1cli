@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
+	"tm1cli/internal/client"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
 
@@ -240,6 +242,10 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		data, err := cl.Get(countEndpoint)
 		switch {
 		case err != nil:
+			if errors.Is(err, client.ErrNotFound) {
+				output.PrintError(err.Error(), jsonMode)
+				return errSilent
+			}
 			output.PrintWarning(preflightFallbackMessage("cannot verify dimension size", limit))
 			treeMode = false
 		default:
@@ -484,15 +490,17 @@ func flattenTree(roots []*treeNode) []indentedRow {
 }
 
 // flattenTreeCapped walks the tree in DFS preorder and stops materializing
-// rows once the cap is reached. Pass cap <= 0 for no cap. The DFS itself
-// short-circuits — callers still needing a full flatTotal should use
-// treeStats for a count-only pass.
-func flattenTreeCapped(roots []*treeNode, cap int) []indentedRow {
+// rows once budget rows have been emitted. Pass budget <= 0 for no cap.
+// The DFS itself short-circuits — callers still needing a full flatTotal
+// should use treeStats for a count-only pass. (Named budget, not cap,
+// because cap() is a Go builtin and a parameter named cap would shadow
+// it inside the function body.)
+func flattenTreeCapped(roots []*treeNode, budget int) []indentedRow {
 	var out []indentedRow
 	var dfs func(*treeNode, int) bool
 	dfs = func(n *treeNode, d int) bool {
 		out = append(out, indentedRow{depth: d, name: n.elem.Name, elType: n.elem.Type})
-		if cap > 0 && len(out) >= cap {
+		if budget > 0 && len(out) >= budget {
 			return false
 		}
 		for _, c := range n.children {

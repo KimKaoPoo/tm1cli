@@ -1339,6 +1339,33 @@ func TestRunDimsMembers_TreeModeOverGateFallsBackToFlat(t *testing.T) {
 	}
 }
 
+func TestRunDimsMembers_TreeModePreflight404SurfacesDirectly(t *testing.T) {
+	// Regression: a 404 on the $count preflight must short-circuit to
+	// a "Not found" error. Previously it fell through to the
+	// "cannot verify dimension size" warning, which nudged users
+	// toward --all before the real not-found error showed up.
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"Dimension not found"}`))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"NoSuchDim"})
+		if err != errSilent {
+			t.Fatalf("404 preflight should return errSilent, got: %v", err)
+		}
+	})
+
+	if strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("404 preflight must NOT emit the size-verification warning, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "Not found") {
+		t.Errorf("404 preflight should surface the not-found error, got stderr: %q", captured.Stderr)
+	}
+}
+
 func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
 	resetCmdFlags(t)
 	membersLimit = 50
