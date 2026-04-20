@@ -442,9 +442,13 @@ func buildCellsetLayout(resp model.CellsetResponse) *cellsetLayout {
 	}
 	colHeaders := buildColHeaders(colAxis)
 
-	all := disambiguateLabels(append(append([]string{}, rowLabels...), colHeaders...))
-	rowLabels = all[:len(rowLabels)]
-	colHeaders = all[len(rowLabels):]
+	combined := make([]string, 0, len(rowLabels)+len(colHeaders))
+	combined = append(combined, rowLabels...)
+	combined = append(combined, colHeaders...)
+	all := disambiguateLabels(combined)
+	numRowDims := len(rowLabels)
+	rowLabels = all[:numRowDims]
+	colHeaders = all[numRowDims:]
 
 	totalRows := 1
 	for _, sz := range axisSizes {
@@ -492,10 +496,10 @@ func buildCellsetLayout(resp model.CellsetResponse) *cellsetLayout {
 	}
 
 	return &cellsetLayout{
-		Headers:     append(append([]string{}, rowLabels...), colHeaders...),
+		Headers:     all,
 		RowMembers:  rowMembers,
 		RowCells:    rowCells,
-		NumRowDims:  len(rowLabels),
+		NumRowDims:  numRowDims,
 		ConstantCol: constantCols,
 	}
 }
