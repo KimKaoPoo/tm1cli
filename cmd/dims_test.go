@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"tm1cli/internal/model"
@@ -1330,6 +1331,7 @@ func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
 
 func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
 	resetCmdFlags(t)
+	membersLimit = 50
 
 	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1356,6 +1358,12 @@ func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
 	if !strings.Contains(captured.Stderr, "flat output") {
 		t.Errorf("fallback warning should mention flat output, got: %q", captured.Stderr)
 	}
+	if !strings.Contains(captured.Stderr, "50") {
+		t.Errorf("fallback warning should disclose the row limit (50), got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("fallback warning should suggest --all for the full dimension, got: %q", captured.Stderr)
+	}
 	if !strings.Contains(captured.Stdout, "Year") {
 		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)
 	}
@@ -1364,8 +1372,55 @@ func TestRunDimsMembers_TreeModePreflightErrorFallsBackToFlat(t *testing.T) {
 	}
 }
 
+func TestRunDimsMembers_TreeModePreflightFallbackWarnsAboutTruncation(t *testing.T) {
+	// Reviewer-requested regression: $count 500, default limit 50,
+	// dimension has 100 elements — the fallback must disclose the
+	// truncation so users don't silently consume 50/100 rows.
+	resetCmdFlags(t)
+	membersLimit = 50
+
+	names := make([]string, 100)
+	types := make([]string, 100)
+	for i := range names {
+		names[i] = fmt.Sprintf("E%d", i)
+		types[i] = "Numeric"
+	}
+
+	var servedTop int
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/$count") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"$count unsupported"}`))
+			return
+		}
+		servedTop = len(names)
+		if topParam := r.URL.Query().Get("$top"); topParam != "" {
+			if n, err := strconv.Atoi(topParam); err == nil && n < servedTop {
+				servedTop = n
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(elementsJSON(names[:servedTop], types[:servedTop]))
+	})
+
+	captured := captureAll(t, func() {
+		err := runDimsMembers(dimsMembersCmd, []string{"HundredDim"})
+		if err != nil {
+			t.Fatalf("fallback should succeed, got: %v", err)
+		}
+	})
+
+	if servedTop != 50 {
+		t.Errorf("fallback should still send $top=50 to protect against huge dims, server saw top=%d", servedTop)
+	}
+	if !strings.Contains(captured.Stderr, "50") || !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("fallback warning must disclose the 50-row limit and suggest --all; got: %q", captured.Stderr)
+	}
+}
+
 func TestRunDimsMembers_TreeModePreflightNonIntegerFallsBackToFlat(t *testing.T) {
 	resetCmdFlags(t)
+	membersLimit = 25
 
 	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1388,6 +1443,9 @@ func TestRunDimsMembers_TreeModePreflightNonIntegerFallsBackToFlat(t *testing.T)
 
 	if !strings.Contains(captured.Stderr, "cannot verify dimension size") {
 		t.Errorf("fallback warning should mention size verification, got stderr: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "25") {
+		t.Errorf("fallback warning should disclose the row limit (25), got stderr: %q", captured.Stderr)
 	}
 	if !strings.Contains(captured.Stdout, "Year") {
 		t.Errorf("fallback should still render elements, got stdout: %q", captured.Stdout)

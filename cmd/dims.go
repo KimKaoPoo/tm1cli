@@ -240,13 +240,13 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 		data, err := cl.Get(countEndpoint)
 		switch {
 		case err != nil:
-			output.PrintWarning("cannot verify dimension size; falling back to flat output (use --all for full tree view).")
+			output.PrintWarning(preflightFallbackMessage("cannot verify dimension size", limit))
 			treeMode = false
 		default:
 			n, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
 			switch {
 			case parseErr != nil:
-				output.PrintWarning("cannot verify dimension size (unexpected server response); falling back to flat output (use --all for full tree view).")
+				output.PrintWarning(preflightFallbackMessage("cannot verify dimension size (unexpected server response)", limit))
 				treeMode = false
 			case n > treeElementGate:
 				output.PrintError(fmt.Sprintf("dimension has %d elements. Tree view requires --all for dimensions over %d; use --flat for a faster listing.", n, treeElementGate), jsonMode)
@@ -300,6 +300,16 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 	}
 
 	return displayMembers(elements, len(elements), limit, jsonMode, treeMode)
+}
+
+// preflightFallbackMessage composes the stderr warning printed when the
+// $count preflight cannot be satisfied. The warning must surface the row
+// limit explicitly so users don't silently consume truncated results.
+func preflightFallbackMessage(reason string, limit int) string {
+	if limit > 0 {
+		return fmt.Sprintf("%s; falling back to flat output (limited to %d rows; use --all for the full dimension).", reason, limit)
+	}
+	return fmt.Sprintf("%s; falling back to flat output (use --all for the full dimension).", reason)
 }
 
 func filterElementsByName(elements []model.Element, filter string) []model.Element {
