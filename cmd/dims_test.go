@@ -1292,40 +1292,50 @@ func TestRunDimsMembers_CountSkipsExpand(t *testing.T) {
 	}
 }
 
-func TestRunDimsMembers_TreeModeGatesWithoutAll(t *testing.T) {
+func TestRunDimsMembers_TreeModeOverGateFallsBackToFlat(t *testing.T) {
+	// Preserves the pre-PR contract of --all: exceeding the 5000-element
+	// gate no longer hard-errors. The user instead gets flat output with
+	// a warning naming the count and nudging toward --all.
 	resetCmdFlags(t)
+	membersLimit = 50
 
-	var elementsFetched bool
+	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/$count") {
 			w.Header().Set("Content-Type", "text/plain")
 			fmt.Fprintf(w, "%d", treeElementGate+1)
 			return
 		}
-		elementsFetched = true
+		capturedQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(elementsWithComponentsJSON([]string{"X"}, []string{"Numeric"}, nil))
+		w.Write(elementsJSON([]string{"X"}, []string{"Numeric"}))
 	})
 
 	captured := captureAll(t, func() {
 		err := runDimsMembers(dimsMembersCmd, []string{"Big"})
-		if err != errSilent {
-			t.Fatalf("expected errSilent when gate triggers, got: %v", err)
+		if err != nil {
+			t.Fatalf("over-gate path should fall back, got: %v", err)
 		}
 	})
 
-	if elementsFetched {
-		t.Error("gate must abort before the heavy elements fetch; server saw the request")
-	}
-	if !strings.Contains(captured.Stderr, "Tree view requires --all") {
-		t.Errorf("gate error should lock the phrase 'Tree view requires --all', got stderr: %q", captured.Stderr)
-	}
-	if !strings.Contains(captured.Stderr, "--flat") {
-		t.Errorf("gate error should suggest --flat, got stderr: %q", captured.Stderr)
+	if !strings.Contains(captured.Stderr, "[warn]") {
+		t.Errorf("over-gate fallback should emit [warn] on stderr, got: %q", captured.Stderr)
 	}
 	wantCount := fmt.Sprintf("%d", treeElementGate+1)
 	if !strings.Contains(captured.Stderr, wantCount) {
-		t.Errorf("gate error should include the element count %s, got stderr: %q", wantCount, captured.Stderr)
+		t.Errorf("warning should include the element count %s, got stderr: %q", wantCount, captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "over 5000") {
+		t.Errorf("warning should state 'over %d' for clarity, got stderr: %q", treeElementGate, captured.Stderr)
+	}
+	if !strings.Contains(captured.Stderr, "50") || !strings.Contains(captured.Stderr, "full dimension") {
+		t.Errorf("warning should disclose row limit and suggest --all; got: %q", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "X") {
+		t.Errorf("fallback should render elements; got stdout: %q", captured.Stdout)
+	}
+	if strings.Contains(capturedQuery, "expand") {
+		t.Errorf("fallback fetch must NOT include $expand; got query: %s", capturedQuery)
 	}
 }
 

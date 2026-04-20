@@ -195,12 +195,12 @@ list. Indentation is disabled automatically with --filter, --count, and
 --output json.
 
 Tree mode fetches the full hierarchy so indentation stays intact. For
-dimensions over 5000 elements, tree view is gated behind --all; use
---flat for a faster listing or --all to acknowledge the fetch cost.
-If the server doesn't support /Elements/$count the command falls back
-to flat output with a warning. Hierarchies with extreme diamond
-expansion (over 50000 render rows) are rejected unconditionally — use
---flat to inspect them.`,
+dimensions over 5000 elements the command falls back to flat output
+with a warning, keeping the pre-PR contract of the default invocation;
+pass --all to get the full indented tree. If the server doesn't support
+/Elements/$count the command falls back to flat output the same way.
+Hierarchies with extreme diamond expansion (over 50000 render rows)
+are rejected unconditionally — use --flat to inspect them.`,
 	Example: `  tm1cli dims members Period
   tm1cli dims members Period --flat
   tm1cli dims members Region --hierarchy "Alternate Region"
@@ -249,8 +249,8 @@ func runDimsMembers(cmd *cobra.Command, args []string) error {
 				output.PrintWarning(preflightFallbackMessage("cannot verify dimension size (unexpected server response)", limit))
 				treeMode = false
 			case n > treeElementGate:
-				output.PrintError(fmt.Sprintf("dimension has %d elements. Tree view requires --all for dimensions over %d; use --flat for a faster listing.", n, treeElementGate), jsonMode)
-				return errSilent
+				output.PrintWarning(preflightFallbackMessage(fmt.Sprintf("dimension has %d elements (over %d)", n, treeElementGate), limit))
+				treeMode = false
 			}
 		}
 	}
