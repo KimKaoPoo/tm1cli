@@ -255,12 +255,38 @@ func TestThreadsListTruncation(t *testing.T) {
 	})
 
 	if !strings.Contains(gotURL, "$top=") {
-		t.Errorf("expected $top in request URL to limit server fetch, got: %s", gotURL)
+		t.Errorf("expected $top in request URL when no filters active, got: %s", gotURL)
 	}
 	if !strings.Contains(cap.Stderr, "Showing 50 of 55") {
 		t.Errorf("expected truncation summary on stderr, got: %s", cap.Stderr)
 	}
 	if strings.Contains(cap.Stderr, "--filter") {
 		t.Errorf("truncation hint must not reference --filter (threads list has no such flag), got: %s", cap.Stderr)
+	}
+}
+
+// TestThreadsListFilterSkipsTop verifies $top is omitted when client-side filters are active,
+// so the full thread collection is available for filtering without silent omissions.
+func TestThreadsListFilterSkipsTop(t *testing.T) {
+	resetCmdFlags(t)
+	threads := []model.Thread{
+		{ID: 1, Name: "Admin", State: "Run"},
+		{ID: 2, Name: "UserA", State: "Idle"},
+	}
+	var gotURL string
+	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(threadsJSON(threads...))
+	})
+	_ = ts
+
+	captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "list", "--state", "Run"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(gotURL, "$top=") {
+		t.Errorf("$top must not be sent when --state filter is active (could silently omit matching threads), got: %s", gotURL)
 	}
 }

@@ -70,7 +70,8 @@ func runThreadsList(cmd *cobra.Command, args []string) error {
 	endpoint := "Threads?$select=ID,Type,Name,Context,State,Function,ObjectType,ObjectName,RLocks,IXLocks,WLocks,ElapsedTime,WaitTime,Info"
 
 	fetchEndpoint := endpoint
-	if limit > 0 {
+	activeFilters := threadsUser != "" || threadsState != "" || threadsMinElapsed != ""
+	if limit > 0 && !activeFilters {
 		fetchEndpoint += fmt.Sprintf("&$top=%d", limit+100)
 	}
 
