@@ -32,6 +32,10 @@ type Client struct {
 }
 
 func NewClient(server config.ServerConfig, password string, tlsVerify bool, verbose bool) (*Client, error) {
+	if strings.EqualFold(server.AuthMode, "cam") && server.Namespace == "" {
+		return nil, fmt.Errorf("CAM auth requires a namespace; set it with --namespace or 'tm1cli config edit'")
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create cookie jar: %w", err)
@@ -187,6 +191,9 @@ func (c *Client) wrapError(err error) error {
 func (c *Client) httpError(status int, body []byte, endpoint string) error {
 	switch status {
 	case 401:
+		if strings.EqualFold(c.authMode, "cam") {
+			return fmt.Errorf("Authentication failed. Check username, password, and CAM namespace (%s).", c.namespace)
+		}
 		return fmt.Errorf("Authentication failed. Check credentials.")
 	case 404:
 		return fmt.Errorf("Not found: %s: %w", endpoint, ErrNotFound)
