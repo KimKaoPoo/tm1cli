@@ -115,8 +115,12 @@ func formatThreadDuration(d model.ThreadDuration) string {
 	if dur < time.Minute {
 		return fmt.Sprintf("%.1fs", secs)
 	}
-	m := int(dur.Minutes())
+	h := int(dur.Hours())
+	m := int(dur.Minutes()) % 60
 	s := int(dur.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm%ds", h, m, s)
+	}
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 

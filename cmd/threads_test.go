@@ -78,6 +78,8 @@ func TestFormatThreadDuration(t *testing.T) {
 		{1.5, "1.5s"},
 		{59.9, "59.9s"},
 		{90.0, "1m30s"},
+		{3600.0, "1h0m0s"},
+		{5400.0, "1h30m0s"},
 	}
 	for _, tt := range tests {
 		got := formatThreadDuration(model.ThreadDuration(tt.secs))
