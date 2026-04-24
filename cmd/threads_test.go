@@ -241,7 +241,9 @@ func TestThreadsListTruncation(t *testing.T) {
 	for i := range threads {
 		threads[i] = model.Thread{ID: int64(i + 1), Name: "user", State: "Idle"}
 	}
+	var gotURL string
 	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(threadsJSON(threads...))
 	})
@@ -252,6 +254,9 @@ func TestThreadsListTruncation(t *testing.T) {
 		rootCmd.Execute()
 	})
 
+	if !strings.Contains(gotURL, "$top=") {
+		t.Errorf("expected $top in request URL to limit server fetch, got: %s", gotURL)
+	}
 	if !strings.Contains(cap.Stderr, "Showing 50 of 55") {
 		t.Errorf("expected truncation summary on stderr, got: %s", cap.Stderr)
 	}

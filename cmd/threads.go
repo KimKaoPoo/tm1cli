@@ -69,7 +69,12 @@ func runThreadsList(cmd *cobra.Command, args []string) error {
 	limit := getLimit(cfg, threadsLimit, threadsAll)
 	endpoint := "Threads?$select=ID,Type,Name,Context,State,Function,ObjectType,ObjectName,RLocks,IXLocks,WLocks,ElapsedTime,WaitTime,Info"
 
-	data, err := cl.Get(endpoint)
+	fetchEndpoint := endpoint
+	if limit > 0 {
+		fetchEndpoint += fmt.Sprintf("&$top=%d", limit+100)
+	}
+
+	data, err := cl.Get(fetchEndpoint)
 	if err != nil {
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
