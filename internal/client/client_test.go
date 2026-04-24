@@ -396,6 +396,106 @@ func TestPatch(t *testing.T) {
 	}
 }
 
+func TestNewClientCAMValidation(t *testing.T) {
+	t.Run("cam with namespace succeeds", func(t *testing.T) {
+		srv := config.ServerConfig{
+			URL:       "https://localhost:8010",
+			User:      "admin",
+			AuthMode:  "cam",
+			Namespace: "LDAP",
+		}
+		_, err := NewClient(srv, "secret", false, false)
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("cam with empty namespace returns error", func(t *testing.T) {
+		srv := config.ServerConfig{
+			URL:      "https://localhost:8010",
+			User:     "admin",
+			AuthMode: "cam",
+		}
+		_, err := NewClient(srv, "secret", false, false)
+		if err == nil {
+			t.Fatal("expected error for cam with empty namespace, got nil")
+		}
+		if !strings.Contains(err.Error(), "namespace") {
+			t.Errorf("error = %q, want it to mention 'namespace'", err.Error())
+		}
+	})
+
+	t.Run("cam auth mode is case-insensitive for namespace validation", func(t *testing.T) {
+		srv := config.ServerConfig{
+			URL:      "https://localhost:8010",
+			User:     "admin",
+			AuthMode: "CAM",
+		}
+		_, err := NewClient(srv, "secret", false, false)
+		if err == nil {
+			t.Fatal("expected error for CAM (uppercase) with empty namespace, got nil")
+		}
+		if !strings.Contains(err.Error(), "namespace") {
+			t.Errorf("error = %q, want it to mention 'namespace'", err.Error())
+		}
+	})
+
+	t.Run("basic auth with empty namespace succeeds", func(t *testing.T) {
+		srv := config.ServerConfig{
+			URL:      "https://localhost:8010",
+			User:     "admin",
+			AuthMode: "basic",
+		}
+		_, err := NewClient(srv, "secret", false, false)
+		if err != nil {
+			t.Fatalf("expected no error for basic auth without namespace, got: %v", err)
+		}
+	})
+}
+
+func TestCAMAuth401Error(t *testing.T) {
+	t.Run("CAM 401 mentions namespace in error", func(t *testing.T) {
+		ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"message":"Authentication required."}`))
+		})
+		defer ts.Close()
+
+		c := newTestClient(t, ts.URL, func(srv *config.ServerConfig) {
+			srv.AuthMode = "cam"
+			srv.Namespace = "LDAP"
+		})
+
+		_, err := c.Get("Cubes")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "namespace") {
+			t.Errorf("CAM 401 error = %q, want it to mention 'namespace'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "LDAP") {
+			t.Errorf("CAM 401 error = %q, want it to contain the namespace name 'LDAP'", err.Error())
+		}
+	})
+
+	t.Run("basic 401 does not mention namespace", func(t *testing.T) {
+		ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`Unauthorized`))
+		})
+		defer ts.Close()
+
+		c := newTestClient(t, ts.URL)
+		_, err := c.Get("Cubes")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if strings.Contains(err.Error(), "namespace") {
+			t.Errorf("basic 401 error = %q, should not mention 'namespace'", err.Error())
+		}
+	})
+}
+
 func TestSetAuth(t *testing.T) {
 	t.Run("basic auth sets Authorization header", func(t *testing.T) {
 		var capturedAuth string
