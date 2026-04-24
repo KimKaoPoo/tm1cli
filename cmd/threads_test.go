@@ -255,4 +255,7 @@ func TestThreadsListTruncation(t *testing.T) {
 	if !strings.Contains(cap.Stderr, "Showing 50 of 55") {
 		t.Errorf("expected truncation summary on stderr, got: %s", cap.Stderr)
 	}
+	if strings.Contains(cap.Stderr, "--filter") {
+		t.Errorf("truncation hint must not reference --filter (threads list has no such flag), got: %s", cap.Stderr)
+	}
 }

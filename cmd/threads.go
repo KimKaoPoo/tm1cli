@@ -149,7 +149,7 @@ func displayThreads(threads []model.Thread, total int, limit int, jsonMode bool)
 		}
 	}
 	output.PrintTable(headers, rows)
-	output.PrintSummary(len(shown), total)
+	output.PrintSummary(len(shown), total, "--user, --state, or --min-elapsed to filter or --all")
 }
 
 func init() {

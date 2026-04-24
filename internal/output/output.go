@@ -23,9 +23,13 @@ func PrintJSON(data interface{}) {
 	enc.Encode(data)
 }
 
-func PrintSummary(shown int, total int) {
+func PrintSummary(shown int, total int, hints ...string) {
 	if shown < total {
-		fmt.Fprintf(os.Stderr, "Showing %d of %d. Use --filter to search or --all to show everything.\n", shown, total)
+		hint := "--filter to search or --all"
+		if len(hints) > 0 && hints[0] != "" {
+			hint = hints[0]
+		}
+		fmt.Fprintf(os.Stderr, "Showing %d of %d. Use %s to show everything.\n", shown, total, hint)
 	}
 }
 
