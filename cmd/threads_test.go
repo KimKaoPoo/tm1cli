@@ -73,6 +73,7 @@ func TestFormatThreadDuration(t *testing.T) {
 		secs float64
 		want string
 	}{
+		{-1.0, "0ms"},
 		{0.0, "0ms"},
 		{0.5, "500ms"},
 		{1.5, "1.5s"},

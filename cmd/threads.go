@@ -114,6 +114,9 @@ func filterThreads(threads []model.Thread, user, state string, minElapsed time.D
 
 func formatThreadDuration(d model.ThreadDuration) string {
 	secs := float64(d)
+	if secs <= 0 {
+		return "0ms"
+	}
 	if secs < 1 {
 		return fmt.Sprintf("%dms", int(secs*1000))
 	}

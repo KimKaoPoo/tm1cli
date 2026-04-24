@@ -44,7 +44,7 @@ func ParseODataDuration(s string) float64 {
 	} {
 		if idx := strings.Index(s, unit.suffix); idx >= 0 {
 			v, err := strconv.ParseFloat(s[:idx], 64)
-			if err == nil {
+			if err == nil { // malformed component contributes 0; intentional silent fallback
 				total += v * unit.mult
 			}
 			s = s[idx+1:]
