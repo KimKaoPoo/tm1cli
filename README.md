@@ -183,6 +183,17 @@ tm1cli process run "LoadData"              # run without params
 tm1cli process run "LoadData" --param pSource=file.csv --param pYear=2024
 ```
 
+### Threads
+
+```bash
+tm1cli threads list                       # list running threads
+tm1cli threads list --state Run           # filter by state (Idle|Run|Wait|CommitWait|Rollback)
+tm1cli threads list --user Admin          # filter by user (partial, case-insensitive)
+tm1cli threads list --min-elapsed 10s     # threads running longer than 10 seconds
+tm1cli threads list --all                 # no 50-row limit
+tm1cli threads list --output json         # full 14-field JSON output
+```
+
 ### Export
 
 ```bash
