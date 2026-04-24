@@ -26,6 +26,8 @@ func (d *ThreadDuration) UnmarshalJSON(b []byte) error {
 
 // ParseODataDuration parses ISO 8601 / OData Edm.Duration strings to seconds.
 // Handles: "PT10.5S", "PT1M30S", "PT1H0M10S", "duration'PT10S'"
+// Day components (e.g. "P1DT10S") are not supported — the day digit is discarded.
+// TM1 thread durations are always sub-day so this is not a practical concern.
 func ParseODataDuration(s string) float64 {
 	s = strings.TrimPrefix(s, "duration'")
 	s = strings.TrimSuffix(s, "'")

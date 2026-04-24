@@ -231,3 +231,26 @@ func TestThreadsListAll(t *testing.T) {
 		t.Errorf("expected at least 60 data rows, got output:\n%s", cap.Stdout)
 	}
 }
+
+// TestThreadsListTruncation verifies the default 50-row cap fires and the summary goes to stderr.
+func TestThreadsListTruncation(t *testing.T) {
+	resetCmdFlags(t)
+	threads := make([]model.Thread, 55)
+	for i := range threads {
+		threads[i] = model.Thread{ID: int64(i + 1), Name: "user", State: "Idle"}
+	}
+	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(threadsJSON(threads...))
+	})
+	_ = ts
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Showing 50 of 55") {
+		t.Errorf("expected truncation summary on stderr, got: %s", cap.Stderr)
+	}
+}
