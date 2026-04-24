@@ -58,11 +58,12 @@ func runThreadsList(cmd *cobra.Command, args []string) error {
 
 	var minElapsed time.Duration
 	if threadsMinElapsed != "" {
-		minElapsed, err = time.ParseDuration(threadsMinElapsed)
+		d, err := time.ParseDuration(threadsMinElapsed)
 		if err != nil {
 			output.PrintError(fmt.Sprintf("Invalid --min-elapsed value %q: %s", threadsMinElapsed, err), jsonMode)
 			return errSilent
 		}
+		minElapsed = d
 	}
 
 	limit := getLimit(cfg, threadsLimit, threadsAll)
@@ -83,12 +84,6 @@ func runThreadsList(cmd *cobra.Command, args []string) error {
 	threads := filterThreads(resp.Value, threadsUser, threadsState, minElapsed)
 	displayThreads(threads, len(threads), limit, jsonMode)
 	return nil
-}
-
-// parseODataDuration is a package-level alias for model.ParseODataDuration,
-// exposed here so cmd-package tests can exercise the parsing logic directly.
-func parseODataDuration(s string) float64 {
-	return model.ParseODataDuration(s)
 }
 
 func filterThreads(threads []model.Thread, user, state string, minElapsed time.Duration) []model.Thread {
@@ -150,7 +145,7 @@ func displayThreads(threads []model.Thread, total int, limit int, jsonMode bool)
 		}
 	}
 	output.PrintTable(headers, rows)
-	fmt.Printf("Showing %d of %d\n", len(shown), total)
+	output.PrintSummary(len(shown), total)
 }
 
 func init() {

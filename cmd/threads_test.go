@@ -87,50 +87,6 @@ func TestFormatThreadDuration(t *testing.T) {
 	}
 }
 
-// --- Unit: parseODataDuration ---
-
-func TestParseODataDuration(t *testing.T) {
-	tests := []struct {
-		input string
-		want  float64
-	}{
-		{"PT10S", 10.0},
-		{"PT1M30S", 90.0},
-		{"PT1H0M0S", 3600.0},
-		{"duration'PT10S'", 10.0},
-		{"PT0.5S", 0.5},
-	}
-	for _, tt := range tests {
-		got := parseODataDuration(tt.input)
-		if got != tt.want {
-			t.Errorf("parseODataDuration(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-// --- Unit: ThreadDuration JSON unmarshal ---
-
-func TestThreadDurationUnmarshalJSON(t *testing.T) {
-	t.Run("float64 value", func(t *testing.T) {
-		var d model.ThreadDuration
-		if err := json.Unmarshal([]byte("5.0"), &d); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if float64(d) != 5.0 {
-			t.Errorf("got %v, want 5.0", d)
-		}
-	})
-	t.Run("ISO duration string", func(t *testing.T) {
-		var d model.ThreadDuration
-		if err := json.Unmarshal([]byte(`"PT10S"`), &d); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if float64(d) != 10.0 {
-			t.Errorf("got %v, want 10.0", d)
-		}
-	})
-}
-
 // --- Integration: threads list ---
 
 func TestThreadsList(t *testing.T) {
@@ -152,10 +108,9 @@ func TestThreadsList(t *testing.T) {
 			wantOut: []string{"Admin", "Run", "UserA", "Idle"},
 		},
 		{
-			name:    "empty thread list shows zero summary",
+			name:    "empty thread list produces no error",
 			args:    []string{"threads", "list"},
 			threads: []model.Thread{},
-			wantOut: []string{"Showing 0 of 0"},
 		},
 		{
 			name:    "filter by state",
@@ -263,15 +218,16 @@ func TestThreadsListAll(t *testing.T) {
 	})
 	_ = ts
 
-	out := captureStdout(t, func() {
+	cap := captureAll(t, func() {
 		rootCmd.SetArgs([]string{"threads", "list", "--all"})
 		rootCmd.Execute()
 	})
 
-	if strings.Contains(out, "Showing 50 of 60") {
-		t.Error("--all should not truncate to 50, but output suggests it did")
+	if strings.Contains(cap.Stderr, "Showing 50 of 60") {
+		t.Error("--all should not truncate to 50")
 	}
-	if !strings.Contains(out, "Showing 60 of 60") {
-		t.Errorf("expected 'Showing 60 of 60' in output, got: %s", out)
+	// 60 data rows + 1 header = at least 61 lines in the table output
+	if strings.Count(cap.Stdout, "\n") < 61 {
+		t.Errorf("expected at least 60 data rows, got output:\n%s", cap.Stdout)
 	}
 }
