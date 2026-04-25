@@ -194,6 +194,29 @@ tm1cli threads list --all                 # no 50-row limit
 tm1cli threads list --output json         # full 14-field JSON output
 ```
 
+### Logs
+
+```bash
+tm1cli logs messages                           # show last 100 message log entries (default)
+tm1cli logs messages --tail 50                 # show last 50 entries
+tm1cli logs messages --since 1h               # entries from the past hour
+tm1cli logs messages --since 2026-04-24T10:00 # entries since absolute timestamp
+tm1cli logs messages --level error            # filter by level: info, warn, error, fatal, debug
+tm1cli logs messages --user admin             # filter by user (client-side, partial match)
+tm1cli logs messages --contains "load"        # filter by message substring (case-insensitive)
+tm1cli logs messages --follow                  # stream new entries kubectl-style (Ctrl+C to stop)
+tm1cli logs messages --follow --interval 10s  # custom poll interval
+tm1cli logs messages --raw                     # raw one-line-per-entry output
+tm1cli logs messages --output json            # JSON array output
+tm1cli logs messages --follow --output json   # NDJSON stream (one object per line)
+```
+
+Levels use canonical TM1 names: `Info`, `Warning`, `Error`, `Fatal`, `Debug`, `Unknown`, `Off`.
+Aliases `warn` and `err` are also accepted.
+
+Server-side `$filter` is used for `--since` and `--level`. If the server rejects the filter
+(HTTP 400/501), tm1cli falls back to client-side filtering with a `[warn]` message.
+
 ### Export
 
 ```bash
