@@ -205,6 +205,7 @@ func TestPrintSummary(t *testing.T) {
 		name       string
 		shown      int
 		total      int
+		hint       string
 		wantOutput bool
 		contains   string
 	}{
@@ -234,12 +235,20 @@ func TestPrintSummary(t *testing.T) {
 			wantOutput: true,
 			contains:   "--all",
 		},
+		{
+			name:       "uses custom hint when provided",
+			shown:      5,
+			total:      100,
+			hint:       "--user, --state, or --min-elapsed to filter or --all",
+			wantOutput: true,
+			contains:   "--user, --state, or --min-elapsed",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			output := captureStderr(t, func() {
-				PrintSummary(tt.shown, tt.total)
+				PrintSummary(tt.shown, tt.total, tt.hint)
 			})
 
 			if tt.wantOutput {

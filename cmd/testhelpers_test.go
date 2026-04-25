@@ -214,6 +214,11 @@ func zeroAllFlags() {
 	subsetsHierarchy = ""
 	watchInterval = "5s"
 	watchSeconds = 0
+	threadsUser = ""
+	threadsState = ""
+	threadsMinElapsed = ""
+	threadsLimit = 0
+	threadsAll = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -374,5 +379,17 @@ func serverConfigJSON(name, version, host string, port int) []byte {
 		AdminHost:      host,
 		HTTPPortNumber: port,
 	})
+	return data
+}
+
+// threadsJSON returns JSON for a TM1 Threads response.
+func threadsJSON(threads ...model.Thread) []byte {
+	resp := struct {
+		Value []model.Thread `json:"value"`
+	}{Value: threads}
+	if resp.Value == nil {
+		resp.Value = []model.Thread{}
+	}
+	data, _ := json.Marshal(resp)
 	return data
 }
