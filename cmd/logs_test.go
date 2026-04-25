@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -997,22 +998,19 @@ func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	var requestCount int32
 	var secondQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&requestCount, 1)
+		atomic.AddInt32(&requestCount, 1)
 		query := r.URL.RawQuery
 		if strings.Contains(query, "%24filter") || strings.Contains(query, "$filter") {
-			// First request: reject the filter
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("$filter not supported"))
 			return
 		}
-		// Second request: return full list
 		secondQuery = query
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(messageLogJSON(
 			model.MessageLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", Level: "Info", Message: "info msg"},
 			model.MessageLogEntry{ID: "2", TimeStamp: "2026-04-25T10:01:00Z", Level: "Error", Message: "error msg"},
 		))
-		_ = n
 	})
 
 	out := captureAll(t, func() {
@@ -1216,7 +1214,7 @@ func TestFollowMessageLogs_PollsAndAdvancesWatermark(t *testing.T) {
 	var pollCount int32
 	var capturedFilters []string
 
-	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		n := int(atomic.AddInt32(&pollCount, 1))
 		decoded, _ := decodedQuery(r.URL.RawQuery)
 		capturedFilters = append(capturedFilters, decoded)
@@ -1235,7 +1233,6 @@ func TestFollowMessageLogs_PollsAndAdvancesWatermark(t *testing.T) {
 			w.Write(messageLogJSON())
 		}
 	})
-	_ = ts
 
 	cfg, _ := loadConfig()
 	cl, _ := createClient(cfg)
@@ -1273,7 +1270,7 @@ func TestFollowMessageLogs_DropsDuplicateIDsAtBoundary(t *testing.T) {
 
 	var pollCount int32
 
-	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		n := int(atomic.AddInt32(&pollCount, 1))
 		w.Header().Set("Content-Type", "application/json")
 		switch n {
@@ -1292,7 +1289,6 @@ func TestFollowMessageLogs_DropsDuplicateIDsAtBoundary(t *testing.T) {
 			w.Write(messageLogJSON())
 		}
 	})
-	_ = ts
 
 	cfg, _ := loadConfig()
 	cl, _ := createClient(cfg)
@@ -1332,11 +1328,10 @@ func TestFollowMessageLogs_DropsDuplicateIDsAtBoundary(t *testing.T) {
 func TestFollowMessageLogs_ContextCancellationStopsLoop(t *testing.T) {
 	resetCmdFlags(t)
 
-	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(messageLogJSON())
 	})
-	_ = ts
 
 	cfg, _ := loadConfig()
 	cl, _ := createClient(cfg)
@@ -1365,7 +1360,7 @@ func TestFollowMessageLogs_TransientErrorContinues(t *testing.T) {
 
 	var pollCount int32
 
-	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		n := int(atomic.AddInt32(&pollCount, 1))
 		switch n {
 		case 1:
@@ -1383,7 +1378,6 @@ func TestFollowMessageLogs_TransientErrorContinues(t *testing.T) {
 			w.Write(messageLogJSON())
 		}
 	})
-	_ = ts
 
 	cfg, _ := loadConfig()
 	cl, _ := createClient(cfg)
@@ -1421,7 +1415,7 @@ func TestFollowMessageLogs_NDJSONOutput(t *testing.T) {
 
 	var pollCount int32
 
-	ts := setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		n := int(atomic.AddInt32(&pollCount, 1))
 		w.Header().Set("Content-Type", "application/json")
 		if n == 1 {
@@ -1432,7 +1426,6 @@ func TestFollowMessageLogs_NDJSONOutput(t *testing.T) {
 			w.Write(messageLogJSON())
 		}
 	})
-	_ = ts
 
 	cfg, _ := loadConfig()
 	cl, _ := createClient(cfg)
@@ -1478,27 +1471,5 @@ func TestFollowMessageLogs_NDJSONOutput(t *testing.T) {
 
 // decodedQuery URL-decodes the raw query string for readable assertions.
 func decodedQuery(raw string) (string, error) {
-	decoded := raw
-	// Replace %XX with their actual characters for comparison
-	replaced := strings.ReplaceAll(decoded, "+", " ")
-	var err error
-	// Simple iterative percent-decode
-	for strings.Contains(replaced, "%") {
-		prev := replaced
-		for i := 0; i < len(replaced)-2; i++ {
-			if replaced[i] == '%' {
-				hex := replaced[i+1 : i+3]
-				var b byte
-				_, parseErr := fmt.Sscanf(hex, "%X", &b)
-				if parseErr == nil {
-					replaced = replaced[:i] + string(b) + replaced[i+3:]
-					break
-				}
-			}
-		}
-		if replaced == prev {
-			break
-		}
-	}
-	return replaced, err
+	return url.QueryUnescape(raw)
 }

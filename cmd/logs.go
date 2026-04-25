@@ -193,7 +193,7 @@ func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc
 			}
 			var resp model.MessageLogResponse
 			if jsonErr := json.Unmarshal(retryData, &resp); jsonErr != nil {
-				return nil, false, fmt.Errorf("Cannot parse server response.")
+				return nil, false, fmt.Errorf("cannot parse server response: %w", jsonErr)
 			}
 			output.PrintWarning("Server-side filter not supported, filtering locally...")
 			return resp.Value, true, nil
@@ -202,7 +202,7 @@ func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc
 	}
 	var resp model.MessageLogResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, false, fmt.Errorf("Cannot parse server response.")
+		return nil, false, fmt.Errorf("cannot parse server response: %w", err)
 	}
 	return resp.Value, false, nil
 }
@@ -214,6 +214,7 @@ func applyClientFilters(entries []model.MessageLogEntry, sinceTS, level, user, c
 	if sinceTS != "" {
 		sinceT, _ = parseTimeStamp(sinceTS)
 	}
+	levelLower := strings.ToLower(level)
 	uLower := strings.ToLower(user)
 	cLower := strings.ToLower(contains)
 
@@ -225,21 +226,26 @@ func applyClientFilters(entries []model.MessageLogEntry, sinceTS, level, user, c
 				continue
 			}
 		}
-		if level != "" && !strings.EqualFold(e.Level, level) {
+		if level != "" && strings.ToLower(e.Level) != levelLower {
 			continue
+		}
+		var msgLower string
+		needsMsg := contains != "" || (user != "" && e.User == "")
+		if needsMsg {
+			msgLower = strings.ToLower(e.Message)
 		}
 		if user != "" {
 			matched := false
 			if e.User != "" {
 				matched = strings.Contains(strings.ToLower(e.User), uLower)
 			} else {
-				matched = strings.Contains(strings.ToLower(e.Message), uLower)
+				matched = strings.Contains(msgLower, uLower)
 			}
 			if !matched {
 				continue
 			}
 		}
-		if contains != "" && !strings.Contains(strings.ToLower(e.Message), cLower) {
+		if contains != "" && !strings.Contains(msgLower, cLower) {
 			continue
 		}
 		out = append(out, e)
@@ -292,7 +298,6 @@ func boundaryIDs(entries []model.MessageLogEntry) (string, map[string]struct{}) 
 			maxT, maxTS, hasMaxT = t, e.TimeStamp, true
 		}
 	}
-	_ = maxT
 	ids := map[string]struct{}{}
 	for _, e := range entries {
 		if e.TimeStamp == maxTS && e.ID != "" {
@@ -302,11 +307,12 @@ func boundaryIDs(entries []model.MessageLogEntry) (string, map[string]struct{}) 
 	return maxTS, ids
 }
 
-// sanitizeRawMessage replaces embedded \r\n, \n, \r, \t with single spaces
-// to preserve the one-line-per-entry guarantee in raw output.
+// rawMessageReplacer collapses embedded \r\n, \n, \r, \t to single spaces
+// so raw output keeps its one-line-per-entry guarantee.
+var rawMessageReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+
 func sanitizeRawMessage(msg string) string {
-	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
-	return r.Replace(msg)
+	return rawMessageReplacer.Replace(msg)
 }
 
 // printMessageLogEntries renders entries in the chosen format.
@@ -419,7 +425,8 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// Default: when no time-bound flag is set, tail 100 to avoid unbounded reads.
+	// Default tail of 100 when no time-bound flag is set, to avoid unbounded reads
+	// against multi-GB message logs.
 	tail := logsMsgTail
 	if logsMsgSince == "" && tail == 0 && !logsMsgFollow {
 		tail = 100
@@ -438,7 +445,6 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// Apply client-side filters: always for user/contains; also since/level on fallback.
 	applySince, applyLevel := "", ""
 	if fallback {
 		applySince, applyLevel = sinceTS, level
@@ -448,7 +454,6 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 	}
 
 	if tail > 0 {
-		// Server returned descending (newest-first); reverse for chronological display.
 		reverseEntries(entries)
 	} else {
 		sortEntriesByTimeStamp(entries)
