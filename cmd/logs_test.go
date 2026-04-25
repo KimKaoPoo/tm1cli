@@ -633,6 +633,29 @@ func TestDefaultTailIfUnbounded(t *testing.T) {
 	}
 }
 
+func TestResolveFollowWatermark(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	const nowFormatted = "2026-04-25T12:00:00Z"
+
+	tests := []struct {
+		name    string
+		maxTS   string
+		sinceTS string
+		want    string
+	}{
+		{"maxTS wins when present", "2026-04-25T11:50:00Z", "2026-04-25T10:00:00Z", "2026-04-25T11:50:00Z"},
+		{"sinceTS used when maxTS empty", "", "2026-04-25T10:00:00Z", "2026-04-25T10:00:00Z"},
+		{"falls back to now when both empty", "", "", nowFormatted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveFollowWatermark(tt.maxTS, tt.sinceTS, now); got != tt.want {
+				t.Errorf("resolveFollowWatermark(%q, %q, now) = %q, want %q", tt.maxTS, tt.sinceTS, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunLogsMessages_DefaultsToTail100(t *testing.T) {
 	resetCmdFlags(t)
 
@@ -1483,6 +1506,53 @@ func TestFollowMessageLogs_NDJSONOutput(t *testing.T) {
 	}
 	if !strings.Contains(out.Stdout, "ndjson-entry") {
 		t.Errorf("stdout should contain 'ndjson-entry', got:\n%s", out.Stdout)
+	}
+}
+
+// TestFollowMessageLogs_BoundedWhenWatermarkSeededFromNow guards against the regression
+// where bare --follow (no --since, initial fetch returns 0 entries) left the watermark
+// empty and produced an unbounded GET on every poll.
+func TestFollowMessageLogs_BoundedWhenWatermarkSeededFromNow(t *testing.T) {
+	resetCmdFlags(t)
+
+	var pollCount int32
+	var firstFilter string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&pollCount, 1)
+		if n == 1 {
+			decoded, _ := decodedQuery(r.URL.RawQuery)
+			firstFilter = decoded
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(messageLogJSON())
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	watermark := resolveFollowWatermark("", "", time.Now())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	captureAll(t, func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			followMessageLogs(ctx, cl, watermark, nil, "", "", "", 5*time.Millisecond, false, false)
+		}()
+
+		for i := 0; i < 100; i++ {
+			if atomic.LoadInt32(&pollCount) >= 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	})
+
+	if !strings.Contains(firstFilter, "$filter=TimeStamp ge ") {
+		t.Errorf("first follow poll should carry $filter=TimeStamp ge ..., got query: %q", firstFilter)
 	}
 }
 

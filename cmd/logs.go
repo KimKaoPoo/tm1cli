@@ -317,6 +317,21 @@ func defaultTailIfUnbounded(since string, tail int) int {
 	return tail
 }
 
+// resolveFollowWatermark picks the starting watermark for --follow polls.
+// Falls back to now (rather than empty) when no entries were seen and no
+// --since was given, so the first poll's $filter is always bounded — without
+// it, GET /MessageLogEntries would have neither $filter nor $top and could
+// return the entire message log on every tick.
+func resolveFollowWatermark(maxTS, sinceTS string, now time.Time) string {
+	if maxTS != "" {
+		return maxTS
+	}
+	if sinceTS != "" {
+		return sinceTS
+	}
+	return now.UTC().Format(time.RFC3339)
+}
+
 // rawMessageReplacer collapses embedded \r\n, \n, \r, \t to single spaces
 // so raw output keeps its one-line-per-entry guarantee.
 var rawMessageReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
@@ -471,10 +486,7 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 	}
 
 	maxTS, ids := boundaryIDs(entries)
-	if maxTS == "" {
-		// No entries seen yet; start watermark at sinceTS (or empty for "from now").
-		maxTS = sinceTS
-	}
+	maxTS = resolveFollowWatermark(maxTS, sinceTS, time.Now())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
