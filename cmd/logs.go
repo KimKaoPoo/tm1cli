@@ -307,6 +307,16 @@ func boundaryIDs(entries []model.MessageLogEntry) (string, map[string]struct{}) 
 	return maxTS, ids
 }
 
+// defaultTailIfUnbounded returns 100 when no time-bound flag is set to avoid
+// unbounded reads against multi-GB message logs. Applies in --follow too:
+// kubectl-style, show the last N entries first then stream new ones.
+func defaultTailIfUnbounded(since string, tail int) int {
+	if since == "" && tail == 0 {
+		return 100
+	}
+	return tail
+}
+
 // rawMessageReplacer collapses embedded \r\n, \n, \r, \t to single spaces
 // so raw output keeps its one-line-per-entry guarantee.
 var rawMessageReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
@@ -425,12 +435,7 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// Default tail of 100 when no time-bound flag is set, to avoid unbounded reads
-	// against multi-GB message logs.
-	tail := logsMsgTail
-	if logsMsgSince == "" && tail == 0 && !logsMsgFollow {
-		tail = 100
-	}
+	tail := defaultTailIfUnbounded(logsMsgSince, logsMsgTail)
 
 	cl, err := createClient(cfg)
 	if err != nil {
