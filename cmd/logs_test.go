@@ -1257,25 +1257,6 @@ func TestRunLogsMessages_FilterFallbackWithSinceCapsTop(t *testing.T) {
 	}
 }
 
-func TestFallbackRetryTop(t *testing.T) {
-	tests := []struct {
-		name string
-		top  int
-		want int
-	}{
-		{"zero top → safety cap", 0, 1000},
-		{"explicit top → buffered", 100, 600},
-		{"large top → buffered", 5000, 5500},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := fallbackRetryTop(tt.top); got != tt.want {
-				t.Errorf("fallbackRetryTop(%d) = %d, want %d", tt.top, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	resetCmdFlags(t)
 	logsMsgLevel = "error"
@@ -1317,15 +1298,14 @@ func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	if strings.Contains(out.Stdout, "info msg") {
 		t.Errorf("stdout should NOT contain 'info msg' (client-filtered), got:\n%s", out.Stdout)
 	}
-	// Fallback retry must over-fetch (tail 100 + 500 buffer) so client-side
-	// filtering doesn't starve the visible result, and must order desc so the
-	// buffer captures the most recent entries.
+	// Fallback retry preserves the user's --tail and orders desc so the cap
+	// retains the most recent entries.
 	decodedSecond, _ := decodedQuery(secondQuery)
-	if !strings.Contains(decodedSecond, "$top=600") {
-		t.Errorf("fallback query %q should contain $top=600 (tail 100 + 500 buffer)", decodedSecond)
+	if !strings.Contains(decodedSecond, "$top=100") {
+		t.Errorf("fallback query %q should preserve $top=100 from --tail default", decodedSecond)
 	}
 	if !strings.Contains(decodedSecond, "$orderby=TimeStamp desc") {
-		t.Errorf("fallback query %q should order by TimeStamp desc to preserve newest entries", decodedSecond)
+		t.Errorf("fallback query %q should order by TimeStamp desc to retain newest entries", decodedSecond)
 	}
 }
 
