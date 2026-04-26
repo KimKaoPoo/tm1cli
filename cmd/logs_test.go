@@ -979,6 +979,17 @@ func TestRunLogsMessages_RawWithJSONRejected(t *testing.T) {
 	if !strings.Contains(out.Stderr, "--raw cannot be combined with --output json") {
 		t.Errorf("stderr should contain conflict message, got: %q", out.Stderr)
 	}
+	// Per project convention, errors must be JSON when --output json is set —
+	// even for flag-conflict errors that prevent JSON output of the actual data.
+	var errObj struct {
+		Error string `json:"error"`
+	}
+	stderrTrimmed := strings.TrimSpace(out.Stderr)
+	if err := json.Unmarshal([]byte(stderrTrimmed), &errObj); err != nil {
+		t.Errorf("stderr should be JSON when --output json is set, got plain text: %q (parse error: %v)", out.Stderr, err)
+	} else if !strings.Contains(errObj.Error, "--raw cannot be combined") {
+		t.Errorf("JSON error.error should mention conflict, got: %q", errObj.Error)
+	}
 }
 
 func TestRunLogsMessages_TailOrdering(t *testing.T) {
@@ -1207,6 +1218,64 @@ func TestRunLogsMessages_UserClientSide_FromMessage(t *testing.T) {
 // Integration Tests — filter fallback
 // ============================================================
 
+// TestRunLogsMessages_FilterFallbackWithSinceCapsTop guards against an
+// unbounded fallback retry when --since is set without --tail. Without the
+// safety cap, the retry would issue GET /MessageLogEntries with neither
+// $filter nor $top — pulling the entire log on busy servers.
+func TestRunLogsMessages_FilterFallbackWithSinceCapsTop(t *testing.T) {
+	resetCmdFlags(t)
+	logsMsgSince = "2026-04-24T10:00:00Z"
+
+	var requestCount int32
+	var retryQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		query := r.URL.RawQuery
+		if strings.Contains(query, "%24filter") || strings.Contains(query, "$filter") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("$filter not supported"))
+			return
+		}
+		retryQuery = query
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(messageLogJSON())
+	})
+
+	captureAll(t, func() {
+		err := runLogsMessages(logsMessagesCmd, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(retryQuery)
+	if !strings.Contains(decoded, "$top=1000") {
+		t.Errorf("fallback retry with --since but no --tail should cap at $top=1000, got: %q", decoded)
+	}
+	if !strings.Contains(decoded, "$orderby=TimeStamp desc") {
+		t.Errorf("fallback retry should order desc to capture most-recent within cap, got: %q", decoded)
+	}
+}
+
+func TestFallbackRetryTop(t *testing.T) {
+	tests := []struct {
+		name string
+		top  int
+		want int
+	}{
+		{"zero top → safety cap", 0, 1000},
+		{"explicit top → buffered", 100, 600},
+		{"large top → buffered", 5000, 5500},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fallbackRetryTop(tt.top); got != tt.want {
+				t.Errorf("fallbackRetryTop(%d) = %d, want %d", tt.top, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	resetCmdFlags(t)
 	logsMsgLevel = "error"
@@ -1248,10 +1317,15 @@ func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	if strings.Contains(out.Stdout, "info msg") {
 		t.Errorf("stdout should NOT contain 'info msg' (client-filtered), got:\n%s", out.Stdout)
 	}
-	// Fallback request must preserve $top=100 and $orderby
+	// Fallback retry must over-fetch (tail 100 + 500 buffer) so client-side
+	// filtering doesn't starve the visible result, and must order desc so the
+	// buffer captures the most recent entries.
 	decodedSecond, _ := decodedQuery(secondQuery)
-	if !strings.Contains(decodedSecond, "$top=100") {
-		t.Errorf("fallback query %q should still contain $top=100", decodedSecond)
+	if !strings.Contains(decodedSecond, "$top=600") {
+		t.Errorf("fallback query %q should contain $top=600 (tail 100 + 500 buffer)", decodedSecond)
+	}
+	if !strings.Contains(decodedSecond, "$orderby=TimeStamp desc") {
+		t.Errorf("fallback query %q should order by TimeStamp desc to preserve newest entries", decodedSecond)
 	}
 }
 

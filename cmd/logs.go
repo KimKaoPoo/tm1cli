@@ -187,15 +187,40 @@ func isFilterRejection(err error) bool {
 	return false
 }
 
+// fallbackSafetyCap is used as $top when the server rejects $filter and the
+// caller did not supply --tail. Without it, --since-only queries would
+// retry as a bare GET /MessageLogEntries and pull the whole log.
+const fallbackSafetyCap = 1000
+
+// fallbackBuffer over-fetches when --tail is set, leaving room for client-side
+// filtering to still surface ~tail matching entries. Mirrors the +500 buffer
+// peer commands (cmd/process.go, cmd/cubes.go) use.
+const fallbackBuffer = 500
+
+// fallbackRetryTop returns the $top value to use on a filter-rejection retry.
+// When no --tail was given (top=0), cap at fallbackSafetyCap. When --tail is set,
+// inflate by fallbackBuffer so client-side filtering doesn't starve the result.
+func fallbackRetryTop(top int) int {
+	if top == 0 {
+		return fallbackSafetyCap
+	}
+	return top + fallbackBuffer
+}
+
 // fetchMessageLogEntries performs GET. On HTTP 400/501 with a filter-rejection body,
-// it retries without $filter (preserving $top and $orderby) and returns fallback=true.
+// it retries without $filter (with a safety-capped $top) and returns fallback=true.
 // On auth (401/403), not-found (404), or network errors the error propagates unchanged.
 func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc bool) ([]model.MessageLogEntry, bool, error) {
 	endpoint := buildMessageLogQuery(filter, top, orderDesc)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
-			retryEndpoint := buildMessageLogQuery("", top, orderDesc)
+			retryTop := fallbackRetryTop(top)
+			// Always order DESC on fallback so the safety cap retains the most
+			// recent entries — otherwise a --since query with the cap could
+			// return the 1000 oldest entries (since epoch) instead of the 1000
+			// newest within the window.
+			retryEndpoint := buildMessageLogQuery("", retryTop, true)
 			retryData, retryErr := cl.Get(retryEndpoint)
 			if retryErr != nil {
 				return nil, false, retryErr
@@ -204,7 +229,7 @@ func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc
 			if jsonErr := json.Unmarshal(retryData, &resp); jsonErr != nil {
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jsonErr)
 			}
-			output.PrintWarning("Server-side filter not supported, filtering locally...")
+			output.PrintWarning(fmt.Sprintf("Server-side filter not supported, filtering locally (capped at %d entries)...", retryTop))
 			return resp.Value, true, nil
 		}
 		return nil, false, err
@@ -463,7 +488,7 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 	jsonMode := isJSONOutput(cfg)
 
 	if logsMsgRaw && jsonMode {
-		output.PrintError("--raw cannot be combined with --output json.", false)
+		output.PrintError("--raw cannot be combined with --output json.", jsonMode)
 		return errSilent
 	}
 
