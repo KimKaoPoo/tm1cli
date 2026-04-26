@@ -404,6 +404,12 @@ func followMessageLogs(ctx context.Context, cl *client.Client, watermarkTS strin
 		}
 		entries = filtered
 
+		// Compute the watermark from POST-DEDUP entries (what the server actually
+		// surfaced this poll) — not from POST-client-filter entries. Otherwise
+		// --user/--contains filtering everything out leaves the watermark frozen
+		// and every subsequent poll re-fetches the same growing window.
+		seenMaxTS, seenIDs := boundaryIDs(entries)
+
 		applySince, applyLevel := "", ""
 		if fallback {
 			applySince, applyLevel = watermarkTS, level
@@ -411,16 +417,14 @@ func followMessageLogs(ctx context.Context, cl *client.Client, watermarkTS strin
 		if applySince != "" || applyLevel != "" || user != "" || contains != "" {
 			entries = applyClientFilters(entries, applySince, applyLevel, user, contains)
 		}
-		if len(entries) == 0 {
-			continue
+
+		if len(entries) > 0 {
+			sortEntriesByTimeStamp(entries)
+			printMessageLogEntries(entries, jsonMode, rawMode, true)
 		}
 
-		sortEntriesByTimeStamp(entries)
-		printMessageLogEntries(entries, jsonMode, rawMode, true)
-
-		newMaxTS, newIDs := boundaryIDs(entries)
-		if newMaxTS != "" {
-			watermarkTS, watermarkIDs = advanceWatermark(newMaxTS, newIDs)
+		if seenMaxTS != "" {
+			watermarkTS, watermarkIDs = advanceWatermark(seenMaxTS, seenIDs)
 		}
 	}
 }
@@ -504,7 +508,10 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		sortEntriesByTimeStamp(entries)
 	}
 
-	printMessageLogEntries(entries, jsonMode, logsMsgRaw, false)
+	// In --follow + --output json, the initial batch must also be NDJSON so the
+	// stream is uniform — otherwise downstream parsers see a JSON array followed
+	// by raw JSON objects and reject the input as invalid.
+	printMessageLogEntries(entries, jsonMode, logsMsgRaw, logsMsgFollow)
 
 	if !logsMsgFollow {
 		return nil

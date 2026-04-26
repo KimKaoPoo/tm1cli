@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1614,6 +1615,124 @@ func TestFollowMessageLogs_TransientErrorContinues(t *testing.T) {
 	}
 	if !strings.Contains(out.Stdout, "recovery-entry") {
 		t.Errorf("stdout should contain 'recovery-entry' from poll 2, got:\n%s", out.Stdout)
+	}
+}
+
+// TestPrintMessageLogEntries_FollowJSONIsNDJSON guards against the regression
+// where the initial batch in --follow --output json mode was emitted as a
+// JSON array (via output.PrintJSON) while subsequent chunks were NDJSON,
+// producing an invalid stream that downstream parsers cannot consume.
+func TestPrintMessageLogEntries_FollowJSONIsNDJSON(t *testing.T) {
+	entries := []model.MessageLogEntry{
+		{ID: "1", TimeStamp: "2026-04-25T10:01:00Z", Level: "Info", Message: "first"},
+		{ID: "2", TimeStamp: "2026-04-25T10:02:00Z", Level: "Info", Message: "second"},
+	}
+
+	out := captureStdout(t, func() {
+		printMessageLogEntries(entries, true, false, true)
+	})
+
+	trimmed := strings.TrimRight(out, "\n")
+	if strings.HasPrefix(trimmed, "[") {
+		t.Fatalf("follow+JSON initial batch must be NDJSON, but stdout starts with array '[':\n%s", out)
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 NDJSON lines, got %d:\n%s", len(lines), out)
+	}
+	for i, line := range lines {
+		var e model.MessageLogEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Errorf("line %d is not valid JSON object: %v\nline: %q", i, err, line)
+		}
+	}
+}
+
+// TestFollowMessageLogs_AdvancesWatermarkWhenAllClientFiltered guards the
+// follow loop against a poll-amplification bug: when --user/--contains
+// filters every server-returned entry, the watermark must still advance
+// off the post-dedup boundary so the next poll's $filter doesn't keep
+// re-fetching the same growing window.
+func TestFollowMessageLogs_AdvancesWatermarkWhenAllClientFiltered(t *testing.T) {
+	resetCmdFlags(t)
+
+	var pollCount int32
+	var capturedFilters []string
+	var mu sync.Mutex
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&pollCount, 1)
+		decoded, _ := decodedQuery(r.URL.RawQuery)
+		mu.Lock()
+		capturedFilters = append(capturedFilters, decoded)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		// Server-side TimeStamp ge filter: only return entry if its timestamp
+		// passes the filter threshold (mirrors real TM1 server behavior).
+		entry := model.MessageLogEntry{
+			ID:        fmt.Sprintf("e%d", n),
+			TimeStamp: "2026-04-25T10:01:00Z",
+			Level:     "Info",
+			User:      "bob",
+			Message:   "bob entry",
+		}
+		entryTS, _ := parseTimeStamp(entry.TimeStamp)
+		if threshold, ok := extractTimeStampGe(decoded); ok && entryTS.Before(threshold) {
+			w.Write(messageLogJSON())
+			return
+		}
+		w.Write(messageLogJSON(entry))
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out := captureAll(t, func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// --user "alice" filters out all bob entries client-side
+			followMessageLogs(ctx, cl, "2026-04-25T10:00:00Z", nil, "", "alice", "", 5*time.Millisecond, false, false)
+		}()
+
+		for i := 0; i < 100; i++ {
+			if atomic.LoadInt32(&pollCount) >= 3 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(capturedFilters) < 2 {
+		t.Fatalf("expected at least 2 polls, got %d", len(capturedFilters))
+	}
+
+	// Nothing should print — every entry is client-filtered.
+	if strings.Contains(out.Stdout, "bob entry") {
+		t.Errorf("stdout should be empty (all entries client-filtered), got:\n%s", out.Stdout)
+	}
+
+	// The first poll filter starts from the seed watermark.
+	if !strings.Contains(capturedFilters[0], "TimeStamp ge 2026-04-25T10:00:00Z") {
+		t.Errorf("first poll filter unexpected: %q", capturedFilters[0])
+	}
+	// The second poll filter MUST advance — otherwise the watermark is frozen
+	// and we re-fetch the same data on every tick.
+	if capturedFilters[0] == capturedFilters[1] {
+		t.Errorf("watermark should advance after a poll where client filters dropped everything; both polls used: %q", capturedFilters[0])
+	}
+	// The advanced filter should now reference the post-dedup boundary timestamp.
+	if !strings.Contains(capturedFilters[1], "2026-04-25T10:01:00") {
+		t.Errorf("second poll should advance past T1 boundary, got: %q", capturedFilters[1])
 	}
 }
 
