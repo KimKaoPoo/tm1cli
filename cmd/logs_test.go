@@ -633,6 +633,118 @@ func TestDefaultTailIfUnbounded(t *testing.T) {
 	}
 }
 
+func TestAdvanceWatermark(t *testing.T) {
+	t.Run("returns inputs unchanged when ids present", func(t *testing.T) {
+		ids := map[string]struct{}{"a": {}}
+		gotTS, gotIDs := advanceWatermark("2026-04-25T10:00:00Z", ids)
+		if gotTS != "2026-04-25T10:00:00Z" {
+			t.Errorf("ts = %q, want unchanged", gotTS)
+		}
+		if len(gotIDs) != 1 {
+			t.Errorf("ids should be unchanged, got %v", gotIDs)
+		}
+	})
+	t.Run("advances by 1ms when ids empty", func(t *testing.T) {
+		gotTS, gotIDs := advanceWatermark("2026-04-25T10:00:00Z", map[string]struct{}{})
+		if gotTS != "2026-04-25T10:00:00.001Z" {
+			t.Errorf("ts = %q, want 2026-04-25T10:00:00.001Z", gotTS)
+		}
+		if len(gotIDs) != 0 {
+			t.Errorf("ids should be empty, got %v", gotIDs)
+		}
+	})
+	t.Run("advances by 1ms when ids nil", func(t *testing.T) {
+		gotTS, _ := advanceWatermark("2026-04-25T10:00:00Z", nil)
+		if gotTS != "2026-04-25T10:00:00.001Z" {
+			t.Errorf("ts = %q, want 2026-04-25T10:00:00.001Z", gotTS)
+		}
+	})
+	t.Run("returns input ts unchanged when unparseable", func(t *testing.T) {
+		gotTS, gotIDs := advanceWatermark("not-a-timestamp", nil)
+		if gotTS != "not-a-timestamp" {
+			t.Errorf("ts = %q, want unchanged", gotTS)
+		}
+		if gotIDs == nil {
+			t.Error("ids should be non-nil empty map, got nil")
+		}
+	})
+}
+
+func TestRunLogsMessages_NegativeTailRejected(t *testing.T) {
+	resetCmdFlags(t)
+	logsMsgTail = -1
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		w.Write(messageLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		err := runLogsMessages(logsMessagesCmd, nil)
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(out.Stderr, "--tail must be non-negative") {
+		t.Errorf("stderr should reject negative --tail, got: %q", out.Stderr)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 0 {
+		t.Errorf("expected 0 HTTP requests, got %d", got)
+	}
+}
+
+func TestRunLogsMessages_ZeroIntervalWithFollowRejected(t *testing.T) {
+	resetCmdFlags(t)
+	logsMsgFollow = true
+	logsMsgInterval = 0
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		w.Write(messageLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		err := runLogsMessages(logsMessagesCmd, nil)
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(out.Stderr, "--interval must be greater than zero") {
+		t.Errorf("stderr should reject zero --interval, got: %q", out.Stderr)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 0 {
+		t.Errorf("expected 0 HTTP requests, got %d", got)
+	}
+}
+
+func TestRunLogsMessages_NegativeIntervalWithFollowRejected(t *testing.T) {
+	resetCmdFlags(t)
+	logsMsgFollow = true
+	logsMsgInterval = -5 * time.Second
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(messageLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		err := runLogsMessages(logsMessagesCmd, nil)
+		if err != errSilent {
+			t.Fatalf("expected errSilent, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(out.Stderr, "--interval must be greater than zero") {
+		t.Errorf("stderr should reject negative --interval, got: %q", out.Stderr)
+	}
+}
+
 func TestResolveFollowWatermark(t *testing.T) {
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
 	const nowFormatted = "2026-04-25T12:00:00Z"
@@ -1369,6 +1481,57 @@ func TestFollowMessageLogs_DropsDuplicateIDsAtBoundary(t *testing.T) {
 	}
 }
 
+func TestFollowMessageLogs_DedupesAtBoundaryWhenIDsMissing(t *testing.T) {
+	resetCmdFlags(t)
+
+	var pollCount int32
+	idLessEntry := model.MessageLogEntry{TimeStamp: "2026-04-25T10:01:00Z", Level: "Info", Message: "no-id-entry"}
+
+	// Simulate real TM1 server-side $filter behavior: parse `TimeStamp ge ...`
+	// from the query and only include the entry when its timestamp passes the
+	// filter. This is the behavior advanceWatermark relies on for ID-less entries.
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pollCount, 1)
+		decoded, _ := decodedQuery(r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+
+		entryTS, _ := parseTimeStamp(idLessEntry.TimeStamp)
+		threshold, ok := extractTimeStampGe(decoded)
+		if ok && entryTS.Before(threshold) {
+			w.Write(messageLogJSON())
+			return
+		}
+		w.Write(messageLogJSON(idLessEntry))
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out := captureAll(t, func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			followMessageLogs(ctx, cl, "2026-04-25T10:00:00Z", nil, "", "", "", 5*time.Millisecond, false, false)
+		}()
+
+		for i := 0; i < 100; i++ {
+			if atomic.LoadInt32(&pollCount) >= 3 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	})
+
+	count := strings.Count(out.Stdout, "no-id-entry")
+	if count != 1 {
+		t.Errorf("'no-id-entry' should appear exactly once (advanceWatermark moves past boundary by 1ms), got %d times in:\n%s", count, out.Stdout)
+	}
+}
+
 func TestFollowMessageLogs_ContextCancellationStopsLoop(t *testing.T) {
 	resetCmdFlags(t)
 
@@ -1563,4 +1726,25 @@ func TestFollowMessageLogs_BoundedWhenWatermarkSeededFromNow(t *testing.T) {
 // decodedQuery URL-decodes the raw query string for readable assertions.
 func decodedQuery(raw string) (string, error) {
 	return url.QueryUnescape(raw)
+}
+
+// extractTimeStampGe pulls the timestamp out of a query containing
+// `$filter=TimeStamp ge <ts>...` so test mocks can simulate TM1's
+// server-side filter. Returns ok=false when no such filter is present.
+func extractTimeStampGe(decoded string) (time.Time, bool) {
+	const marker = "TimeStamp ge "
+	idx := strings.Index(decoded, marker)
+	if idx < 0 {
+		return time.Time{}, false
+	}
+	rest := decoded[idx+len(marker):]
+	end := strings.IndexAny(rest, " &")
+	if end >= 0 {
+		rest = rest[:end]
+	}
+	t, err := parseTimeStamp(rest)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }

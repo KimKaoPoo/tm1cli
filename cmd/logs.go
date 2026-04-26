@@ -420,10 +420,25 @@ func followMessageLogs(ctx context.Context, cl *client.Client, watermarkTS strin
 
 		newMaxTS, newIDs := boundaryIDs(entries)
 		if newMaxTS != "" {
-			watermarkTS = newMaxTS
-			watermarkIDs = newIDs
+			watermarkTS, watermarkIDs = advanceWatermark(newMaxTS, newIDs)
 		}
 	}
+}
+
+// advanceWatermark returns the next polling watermark + dedupe set. When the
+// boundary entries lack IDs (older TM1 versions), advance past the boundary
+// by 1ms so the inclusive `TimeStamp ge` filter doesn't re-fetch them — we
+// have nothing to dedupe them against. With sub-second resolution rare in
+// TM1 message logs, this is unlikely to skip real entries.
+func advanceWatermark(maxTS string, ids map[string]struct{}) (string, map[string]struct{}) {
+	if len(ids) > 0 {
+		return maxTS, ids
+	}
+	t, err := parseTimeStamp(maxTS)
+	if err != nil {
+		return maxTS, map[string]struct{}{}
+	}
+	return t.Add(time.Millisecond).UTC().Format(time.RFC3339Nano), map[string]struct{}{}
 }
 
 func runLogsMessages(cmd *cobra.Command, args []string) error {
@@ -436,6 +451,16 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 
 	if logsMsgRaw && jsonMode {
 		output.PrintError("--raw cannot be combined with --output json.", false)
+		return errSilent
+	}
+
+	if logsMsgTail < 0 {
+		output.PrintError("--tail must be non-negative.", jsonMode)
+		return errSilent
+	}
+
+	if logsMsgFollow && logsMsgInterval <= 0 {
+		output.PrintError("--interval must be greater than zero (e.g. 5s).", jsonMode)
 		return errSilent
 	}
 
