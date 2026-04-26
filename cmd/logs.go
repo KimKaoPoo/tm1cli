@@ -58,6 +58,11 @@ NDJSON (one JSON object per line) instead of a JSON array.`,
 
 // parseSince accepts a duration ("10m") or absolute timestamp and returns RFC3339 UTC.
 // Empty input returns "" with no error. Negative duration returns an error.
+//
+// Timestamps without an explicit offset (e.g. "2026-04-24T10:00") are
+// interpreted in the caller's local time zone — matching journalctl's --since
+// semantics — so a TM1 admin in UTC+8 typing "10:00" gets 10:00 *their* time,
+// not UTC 10:00. RFC3339 inputs with an explicit offset are honored as written.
 func parseSince(s string, now time.Time) (string, error) {
 	if s == "" {
 		return "", nil
@@ -68,13 +73,17 @@ func parseSince(s string, now time.Time) (string, error) {
 		}
 		return now.Add(-d).UTC().Format(time.RFC3339), nil
 	}
+	// RFC3339 carries an explicit offset; parse as-is.
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	loc := now.Location()
 	for _, layout := range []string{
-		time.RFC3339,
 		"2006-01-02T15:04:05",
 		"2006-01-02T15:04",
 		"2006-01-02",
 	} {
-		if t, err := time.Parse(layout, s); err == nil {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
 			return t.UTC().Format(time.RFC3339), nil
 		}
 	}
@@ -530,7 +539,7 @@ func init() {
 	rootCmd.AddCommand(logsCmd)
 	logsCmd.AddCommand(logsMessagesCmd)
 
-	logsMessagesCmd.Flags().StringVar(&logsMsgSince, "since", "", "Show entries newer than duration (e.g. 10m, 2h) or timestamp (e.g. 2026-04-24T10:00)")
+	logsMessagesCmd.Flags().StringVar(&logsMsgSince, "since", "", "Show entries newer than duration (e.g. 10m, 2h) or timestamp (e.g. 2026-04-24T10:00 — interpreted as local time when no timezone is given)")
 	logsMessagesCmd.Flags().StringVar(&logsMsgLevel, "level", "", "Filter by level: info, warn, error, fatal, debug, unknown, off")
 	logsMessagesCmd.Flags().StringVar(&logsMsgUser, "user", "", "Filter by user (client-side; matches User field or message text)")
 	logsMessagesCmd.Flags().StringVar(&logsMsgContains, "contains", "", "Filter by substring in Message (case-insensitive)")

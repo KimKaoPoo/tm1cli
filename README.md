@@ -200,7 +200,7 @@ tm1cli threads list --output json         # full 14-field JSON output
 tm1cli logs messages                           # show last 100 message log entries (default)
 tm1cli logs messages --tail 50                 # show last 50 entries
 tm1cli logs messages --since 1h               # entries from the past hour
-tm1cli logs messages --since 2026-04-24T10:00 # entries since absolute timestamp
+tm1cli logs messages --since 2026-04-24T10:00 # absolute timestamp (local time when no offset)
 tm1cli logs messages --level error            # filter by level: info, warn, error, fatal, debug
 tm1cli logs messages --user admin             # filter by user (client-side, partial match)
 tm1cli logs messages --contains "load"        # filter by message substring (case-insensitive)
@@ -216,6 +216,12 @@ Aliases `warn` and `err` are also accepted.
 
 Server-side `$filter` is used for `--since` and `--level`. If the server rejects the filter
 (HTTP 400/501), tm1cli falls back to client-side filtering with a `[warn]` message.
+
+`--since` accepts a Go duration (`10m`, `2h`) or an absolute timestamp. Absolute
+timestamps without a timezone offset are interpreted in your **local** time
+zone (matching `journalctl --since`). Use RFC3339 with an explicit offset
+(e.g. `2026-04-24T10:00:00+08:00` or `2026-04-24T02:00:00Z`) when you need
+unambiguous UTC.
 
 ### Export
 

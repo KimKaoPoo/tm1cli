@@ -18,6 +18,62 @@ import (
 // Unit Tests — parseSince
 // ============================================================
 
+// TestParseSince_TimezoneLessUsesLocal proves that absolute timestamps without
+// an explicit offset are interpreted in the caller's local time zone, not UTC.
+// Regression guard: a TM1 admin in UTC+8 typing "10:00" gets local 10:00, not
+// UTC 10:00 (off by 8 hours).
+func TestParseSince_TimezoneLessUsesLocal(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Taipei")
+	if err != nil {
+		t.Fatalf("cannot load Asia/Taipei: %v", err)
+	}
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, loc)
+
+	tests := []struct {
+		name  string
+		input string
+		want  string // expected RFC3339 UTC output
+	}{
+		{
+			name:  "date-time without seconds → local time UTC-shifted",
+			input: "2026-04-24T10:00",
+			want:  "2026-04-24T02:00:00Z", // 10:00 +08:00 = 02:00 UTC
+		},
+		{
+			name:  "date-time with seconds → local time UTC-shifted",
+			input: "2026-04-24T10:00:00",
+			want:  "2026-04-24T02:00:00Z",
+		},
+		{
+			name:  "date-only → local midnight UTC-shifted",
+			input: "2026-04-24",
+			want:  "2026-04-23T16:00:00Z", // 00:00 +08:00 = 16:00 UTC prior day
+		},
+		{
+			name:  "RFC3339 with explicit offset honored as written",
+			input: "2026-04-24T10:00:00+09:00",
+			want:  "2026-04-24T01:00:00Z",
+		},
+		{
+			name:  "RFC3339 with Z stays UTC regardless of caller location",
+			input: "2026-04-24T10:00:00Z",
+			want:  "2026-04-24T10:00:00Z",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSince(tt.input, now)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("parseSince(%q, now in Asia/Taipei) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
 
@@ -1025,7 +1081,10 @@ func TestRunLogsMessages_SinceDuration(t *testing.T) {
 
 func TestRunLogsMessages_SinceAbsolute(t *testing.T) {
 	resetCmdFlags(t)
-	logsMsgSince = "2026-04-24T10:00"
+	// Use an explicit Z so the assertion is portable across CI/dev time zones —
+	// TZ-less inputs are now interpreted in local time, exercised separately
+	// in TestParseSince_TimezoneLessUsesLocal.
+	logsMsgSince = "2026-04-24T10:00:00Z"
 
 	var capturedQuery string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
