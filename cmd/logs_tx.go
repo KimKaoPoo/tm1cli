@@ -140,18 +140,15 @@ func buildTxQuery(filter string, top int, orderDesc bool) string {
 }
 
 // fetchTxEntries performs GET. On HTTP 400/501 with a filter-rejection body,
-// it retries without $filter (capping $top at fallbackSafetyCap when no
-// --tail was given) and returns fallback=true. On auth/not-found/network
-// errors the error propagates unchanged.
+// it retries without $filter (over-fetching via fallbackRetryTop when --tail
+// is set so client-side filtering has room to find matches) and returns
+// fallback=true. On auth/not-found/network errors the error propagates unchanged.
 func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) ([]model.TransactionLogEntry, bool, error) {
 	endpoint := buildTxQuery(filter, top, orderDesc)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
-			retryTop := top
-			if retryTop == 0 {
-				retryTop = fallbackSafetyCap
-			}
+			retryTop := fallbackRetryTop(top)
 			// Force DESC on retry so the cap retains the most recent entries —
 			// otherwise a --since query could return the oldest 1000 since epoch.
 			retryData, retryErr := cl.Get(buildTxQuery("", retryTop, true))
@@ -441,6 +438,13 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 	}
 	if applySince != "" || applyUntil != "" || applyCube != "" || applyUser != "" {
 		entries = applyTxClientFilters(entries, applySince, applyUntil, applyCube, applyUser)
+	}
+
+	// Fallback over-fetches via fallbackTailMultiplier so client-side filtering
+	// has room to find matches; trim back to the user-requested --tail before
+	// display. Server-returned entries are DESC, so [:tail] keeps the newest.
+	if fallback && tail > 0 && len(entries) > tail {
+		entries = entries[:tail]
 	}
 
 	if tail > 0 {

@@ -1080,6 +1080,104 @@ func TestRunLogsTx_FilterFallbackCapsTop(t *testing.T) {
 	}
 }
 
+// TestRunLogsTx_FilterFallbackBuffersTailForCubeFilter verifies that when
+// --tail is set alongside a content filter and the server rejects $filter,
+// the retry over-fetches via fallbackTailMultiplier so client-side filtering
+// can find tail-many matches even when most fetched rows are non-matching.
+// Without the buffer, --tail 5 --cube Sales on a server without $filter
+// support would return at most 5 rows from the latest 5 globally — possibly
+// zero matches.
+func TestRunLogsTx_FilterFallbackBuffersTailForCubeFilter(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxTail = 5
+	logsTxCube = "Sales"
+
+	const wantBuffered = 5 * fallbackTailMultiplier // 50
+
+	var capturedRetryQuery string
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		capturedRetryQuery = r.URL.RawQuery
+		// Simulate a window where Sales matches are sparse: 60 rows, only 7
+		// match cube=Sales. Without the buffer the retry would fetch 5 rows
+		// none of which were Sales; with the buffer (50) we get 7 matches and
+		// truncate to 5.
+		entries := make([]model.TransactionLogEntry, 0, 60)
+		for i := 0; i < 60; i++ {
+			cube := "Inventory"
+			// Place 7 Sales rows interleaved among the newest entries.
+			if i < 7 {
+				cube = "Sales"
+			}
+			entries = append(entries, model.TransactionLogEntry{
+				ID:        int64(i + 1),
+				TimeStamp: time.Date(2026, 4, 25, 10, 0, i, 0, time.UTC).Format(time.RFC3339),
+				User:      "u",
+				Cube:      cube,
+				Tuple:     []string{"x"},
+				OldValue:  json.RawMessage(`0`),
+				NewValue:  json.RawMessage(`1`),
+			})
+		}
+		w.Write(transactionLogJSON(entries...))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(capturedRetryQuery)
+	if !strings.Contains(decoded, fmt.Sprintf("$top=%d", wantBuffered)) {
+		t.Errorf("retry query %q should buffer $top to %d (=tail*multiplier)", decoded, wantBuffered)
+	}
+	if !strings.Contains(decoded, "$orderby=TimeStamp desc") {
+		t.Errorf("retry query %q should force desc order", decoded)
+	}
+	// Only Sales rows should remain after client filter, and at most --tail=5
+	// after truncation. Inventory must NOT appear.
+	if strings.Contains(out.Stdout, "Inventory") {
+		t.Errorf("stdout should not contain Inventory after client filter:\n%s", out.Stdout)
+	}
+	salesCount := strings.Count(out.Stdout, "Sales")
+	// Headers contain "Sales" only via row data; with 7 matches truncated to
+	// 5, we expect exactly 5 "Sales" cells.
+	if salesCount != 5 {
+		t.Errorf("expected exactly 5 Sales rows after truncation, got %d:\n%s", salesCount, out.Stdout)
+	}
+}
+
+// TestFallbackRetryTop covers the helper directly.
+func TestFallbackRetryTop(t *testing.T) {
+	tests := []struct {
+		name string
+		top  int
+		want int
+	}{
+		{"top=0 returns safety cap", 0, fallbackSafetyCap},
+		{"top=1 buffered to 10", 1, 10},
+		{"top=50 buffered to 500", 50, 500},
+		{"top at half-cap stays buffered", 99, 990},
+		{"top equal to cap clamps to cap", fallbackSafetyCap / fallbackTailMultiplier, fallbackSafetyCap},
+		{"top above cap clamps to cap", 5000, fallbackSafetyCap},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fallbackRetryTop(tt.top); got != tt.want {
+				t.Errorf("fallbackRetryTop(%d) = %d, want %d", tt.top, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunLogsTx_NoFallbackOn401(t *testing.T) {
 	resetCmdFlags(t)
 	logsTxCube = "Sales"

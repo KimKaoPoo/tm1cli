@@ -192,19 +192,38 @@ func isFilterRejection(err error) bool {
 // rejects would retry as a bare GET /MessageLogEntries and pull the whole log.
 const fallbackSafetyCap = 1000
 
+// fallbackTailMultiplier widens the fallback retry window when --tail is set
+// alongside a content filter (--level/--user/--contains for messages,
+// --cube/--user for tx). Without the buffer, retrying with raw $top=tail
+// returns the latest N globally and client-filtering can leave near-zero
+// matches even when many matching entries exist just past the window. The
+// retry is capped at fallbackSafetyCap; callers must truncate the post-filter
+// result back to the user-requested --tail.
+const fallbackTailMultiplier = 10
+
+// fallbackRetryTop returns the over-fetch window for a $filter-rejection
+// retry. If --tail was unset (top=0), use the safety cap. If --tail was set,
+// over-fetch by fallbackTailMultiplier capped at the safety cap.
+func fallbackRetryTop(top int) int {
+	if top == 0 {
+		return fallbackSafetyCap
+	}
+	if buffered := top * fallbackTailMultiplier; buffered < fallbackSafetyCap {
+		return buffered
+	}
+	return fallbackSafetyCap
+}
+
 // fetchMessageLogEntries performs GET. On HTTP 400/501 with a filter-rejection body,
-// it retries without $filter (capping $top at fallbackSafetyCap when no --tail was
-// given) and returns fallback=true. On auth (401/403), not-found (404), or network
-// errors the error propagates unchanged.
+// it retries without $filter (over-fetching via fallbackRetryTop when --tail is
+// set so client-side filtering has room to find matches) and returns fallback=true.
+// On auth (401/403), not-found (404), or network errors the error propagates unchanged.
 func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc bool) ([]model.MessageLogEntry, bool, error) {
 	endpoint := buildMessageLogQuery(filter, top, orderDesc)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
-			retryTop := top
-			if retryTop == 0 {
-				retryTop = fallbackSafetyCap
-			}
+			retryTop := fallbackRetryTop(top)
 			// Always order DESC on retry so the cap retains the most recent
 			// entries — otherwise a --since query could return the oldest 1000
 			// entries (since epoch) instead of the 1000 newest in the window.
@@ -522,6 +541,13 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 	}
 	if applySince != "" || applyLevel != "" || logsMsgUser != "" || logsMsgContains != "" {
 		entries = applyClientFilters(entries, applySince, applyLevel, logsMsgUser, logsMsgContains)
+	}
+
+	// Fallback over-fetches via fallbackTailMultiplier so client-side filtering
+	// has room to find matches; trim back to the user-requested --tail before
+	// display. Server-returned entries are DESC, so [:tail] keeps the newest.
+	if fallback && tail > 0 && len(entries) > tail {
+		entries = entries[:tail]
 	}
 
 	if tail > 0 {
