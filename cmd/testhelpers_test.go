@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 	"tm1cli/internal/config"
 	"tm1cli/internal/model"
 
@@ -219,6 +220,14 @@ func zeroAllFlags() {
 	threadsMinElapsed = ""
 	threadsLimit = 0
 	threadsAll = false
+	logsMsgSince = ""
+	logsMsgLevel = ""
+	logsMsgUser = ""
+	logsMsgContains = ""
+	logsMsgFollow = false
+	logsMsgInterval = 5 * time.Second
+	logsMsgTail = 0
+	logsMsgRaw = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -389,6 +398,18 @@ func threadsJSON(threads ...model.Thread) []byte {
 	}{Value: threads}
 	if resp.Value == nil {
 		resp.Value = []model.Thread{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// messageLogJSON returns JSON for a TM1 MessageLogEntries response.
+func messageLogJSON(entries ...model.MessageLogEntry) []byte {
+	resp := struct {
+		Value []model.MessageLogEntry `json:"value"`
+	}{Value: entries}
+	if resp.Value == nil {
+		resp.Value = []model.MessageLogEntry{}
 	}
 	data, _ := json.Marshal(resp)
 	return data
