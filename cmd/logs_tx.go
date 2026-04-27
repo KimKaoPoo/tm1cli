@@ -187,15 +187,15 @@ func applyTxClientFilters(entries []model.TransactionLogEntry, sinceTS, untilTS,
 
 	out := make([]model.TransactionLogEntry, 0, len(entries))
 	for _, e := range entries {
-		if !sinceT.IsZero() {
+		if !sinceT.IsZero() || !untilT.IsZero() {
 			t, err := parseTimeStamp(e.TimeStamp)
-			if err != nil || t.Before(sinceT) {
+			if err != nil {
 				continue
 			}
-		}
-		if !untilT.IsZero() {
-			t, err := parseTimeStamp(e.TimeStamp)
-			if err != nil || t.After(untilT) {
+			if !sinceT.IsZero() && t.Before(sinceT) {
+				continue
+			}
+			if !untilT.IsZero() && t.After(untilT) {
 				continue
 			}
 		}

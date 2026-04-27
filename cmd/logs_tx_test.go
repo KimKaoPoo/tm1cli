@@ -1217,61 +1217,34 @@ func TestRunLogsTx_OldNewValuesPresent(t *testing.T) {
 // Integration tests — follow mode
 // ============================================================
 
-func TestRunLogsTx_FollowJSONInitialBatchIsNDJSON(t *testing.T) {
-	resetCmdFlags(t)
-	logsTxFollow = true
-	logsTxInterval = 5 * time.Millisecond
-	flagOutput = "json"
+// TestPrintTxEntries_NDJSONInFollowChunk verifies the follow+json render path
+// emits one JSON object per line (NDJSON) instead of a JSON array, so that
+// downstream stream parsers can ingest a uniform format across the initial
+// batch and subsequent poll chunks.
+func TestPrintTxEntries_NDJSONInFollowChunk(t *testing.T) {
+	entries := []model.TransactionLogEntry{
+		{ID: 1, TimeStamp: "2026-04-25T10:00:00Z", User: "u", Cube: "C",
+			Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+		{ID: 2, TimeStamp: "2026-04-25T10:00:01Z", User: "u", Cube: "C",
+			Tuple: []string{"x"}, OldValue: json.RawMessage(`1`), NewValue: json.RawMessage(`2`)},
+	}
 
-	var pollCount int32
-	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&pollCount, 1)
-		w.Header().Set("Content-Type", "application/json")
-		// Initial fetch returns one entry; subsequent polls return nothing.
-		if atomic.LoadInt32(&pollCount) == 1 {
-			w.Write(transactionLogJSON(
-				model.TransactionLogEntry{
-					ID: 1, TimeStamp: "2026-04-25T10:00:00Z", User: "u", Cube: "C",
-					Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`),
-				},
-			))
-		} else {
-			w.Write(transactionLogJSON())
-		}
+	out := captureStdout(t, func() {
+		printTxEntries(entries, true, false, true)
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	out := captureAll(t, func() {
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			cfg, _ := loadConfig()
-			cl, _ := createClient(cfg)
-			// Run only the initial-batch portion: emulate follow=true initial print.
-			entries, _, _ := fetchTxEntries(cl, "", 100, true)
-			if logsTxTail == 0 && logsTxSince == "" {
-				// no-op: tail defaulting handled in runLogsTx; for this test we
-				// just want to confirm the print code path emits NDJSON in
-				// follow+json. Use printTxEntries directly with isFollowChunk=true.
-			}
-			printTxEntries(entries, true /*json*/, false, true /*follow*/)
-			cancel()
-		}()
-		<-done
-	})
-	_ = ctx
-
-	stdout := strings.TrimSpace(out.Stdout)
+	stdout := strings.TrimSpace(out)
 	if stdout == "" {
 		t.Fatalf("expected NDJSON, got empty stdout")
 	}
-	// Must NOT be a JSON array
 	if strings.HasPrefix(stdout, "[") {
 		t.Errorf("follow+json should be NDJSON not array, got: %q", stdout)
 	}
-	// Each line must parse as a single object
-	for i, line := range strings.Split(stdout, "\n") {
+	lines := strings.Split(stdout, "\n")
+	if len(lines) != len(entries) {
+		t.Fatalf("expected %d NDJSON lines, got %d", len(entries), len(lines))
+	}
+	for i, line := range lines {
 		var e model.TransactionLogEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Errorf("line %d not a JSON object: %v: %q", i, err, line)
