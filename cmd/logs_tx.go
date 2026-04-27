@@ -70,7 +70,10 @@ func parseTimeFlag(name, value string, now time.Time) (string, error) {
 
 // formatTxValue renders a TM1 Edm.PrimitiveType value (string, number, bool,
 // or null) for table/raw output. JSON strings are unquoted; everything else
-// is rendered as the trimmed raw bytes; null and empty become "".
+// is rendered as the trimmed raw bytes; null and empty become "". When raw
+// looks like a JSON string but Unmarshal fails (malformed escape, etc.), we
+// fall through to the trimmed raw bytes — surfacing the corruption rather
+// than swallowing it with an error column.
 func formatTxValue(raw json.RawMessage) string {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
@@ -430,6 +433,9 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 	// On fallback, apply all four filters client-side. On the success path,
 	// still apply --until client-side as defense in depth — TM1 may round
 	// timestamps server-side and surface entries slightly outside the window.
+	// We do NOT re-apply --since here: server-side `TimeStamp ge` is inclusive
+	// and any rounding would only widen the lower bound by surfacing entries
+	// at or near sinceTS, which is exactly what the user asked for.
 	applySince, applyUntil, applyCube, applyUser := "", "", "", ""
 	if fallback {
 		applySince, applyUntil, applyCube, applyUser = sinceTS, untilTS, logsTxCube, logsTxUser

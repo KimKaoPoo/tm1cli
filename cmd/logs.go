@@ -203,15 +203,14 @@ const fallbackTailMultiplier = 10
 
 // fallbackRetryTop returns the over-fetch window for a $filter-rejection
 // retry. If --tail was unset (top=0), use the safety cap. If --tail was set,
-// over-fetch by fallbackTailMultiplier capped at the safety cap.
+// over-fetch by fallbackTailMultiplier capped at the safety cap. The
+// short-circuit when `top >= fallbackSafetyCap/fallbackTailMultiplier` also
+// guards against int overflow on extreme --tail values.
 func fallbackRetryTop(top int) int {
-	if top == 0 {
+	if top == 0 || top >= fallbackSafetyCap/fallbackTailMultiplier {
 		return fallbackSafetyCap
 	}
-	if buffered := top * fallbackTailMultiplier; buffered < fallbackSafetyCap {
-		return buffered
-	}
-	return fallbackSafetyCap
+	return top * fallbackTailMultiplier
 }
 
 // fetchMessageLogEntries performs GET. On HTTP 400/501 with a filter-rejection body,

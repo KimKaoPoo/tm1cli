@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -1168,6 +1169,8 @@ func TestFallbackRetryTop(t *testing.T) {
 		{"top at half-cap stays buffered", 99, 990},
 		{"top equal to cap clamps to cap", fallbackSafetyCap / fallbackTailMultiplier, fallbackSafetyCap},
 		{"top above cap clamps to cap", 5000, fallbackSafetyCap},
+		// Regression guard: very large --tail must not overflow the multiply.
+		{"top near math.MaxInt32 clamps without overflow", math.MaxInt32, fallbackSafetyCap},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
