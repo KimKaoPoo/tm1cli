@@ -736,13 +736,13 @@ func TestRunLogsTx_RawSanitizesAllFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(transactionLogJSON(
 			model.TransactionLogEntry{
-				ID:        1,
-				TimeStamp: "2026-04-25T10:00:00Z",
-				User:      "ali\nce",
-				Cube:      "Sa\rles",
-				Tuple:     []string{"Q1\t", "2025"},
-				OldValue:  json.RawMessage(`"old\nval"`),
-				NewValue:  json.RawMessage(`"new\rval"`),
+				ID:            1,
+				TimeStamp:     "2026-04-25T10:00:00Z",
+				User:          "ali\nce",
+				Cube:          "Sa\rles",
+				Tuple:         []string{"Q1\t", "2025"},
+				OldValue:      json.RawMessage(`"old\nval"`),
+				NewValue:      json.RawMessage(`"new\rval"`),
 				StatusMessage: "status\nlines",
 			},
 		))
@@ -1176,7 +1176,7 @@ func TestRunLogsTx_TupleRendering(t *testing.T) {
 		w.Write(transactionLogJSON(
 			model.TransactionLogEntry{
 				ID: 1, TimeStamp: "2026-04-25T10:00:00Z", User: "u", Cube: "C",
-				Tuple: []string{"Q1", "2025", "Sales"},
+				Tuple:    []string{"Q1", "2025", "Sales"},
 				OldValue: json.RawMessage(`null`), NewValue: json.RawMessage(`42`),
 			},
 		))

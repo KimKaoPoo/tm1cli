@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -62,7 +63,7 @@ func odataEscape(s string) string {
 func parseTimeFlag(name, value string, now time.Time) (string, error) {
 	ts, err := parseSince(value, now)
 	if err != nil {
-		return "", fmt.Errorf("%s", strings.Replace(err.Error(), "--since", name, 1))
+		return "", errors.New(strings.Replace(err.Error(), "--since", name, 1))
 	}
 	return ts, nil
 }
