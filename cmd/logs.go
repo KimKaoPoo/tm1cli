@@ -347,11 +347,19 @@ func boundaryIDs(entries []model.MessageLogEntry) (string, map[string]struct{}) 
 	return maxTS, ids
 }
 
-// defaultTailIfUnbounded returns 100 when no time-bound flag is set to avoid
-// unbounded reads against multi-GB message logs. Applies in --follow too:
-// kubectl-style, show the last N entries first then stream new ones.
-func defaultTailIfUnbounded(since string, tail int) int {
-	if since == "" && tail == 0 {
+// defaultTailIfUnbounded returns 100 when neither a time bound nor an
+// explicit --tail is set, to avoid unbounded reads against multi-GB logs.
+// Applies in --follow too: kubectl-style, show the last N entries first
+// then stream new ones.
+//
+// `bounded` is true when ANY time-bound flag is set by the caller — for
+// `logs messages` that's just --since, for `logs tx` it's --since OR
+// --until. Treating --until as a bound prevents silent truncation of
+// queries like `tm1cli logs tx --until 2026-04-24T18:00:00Z` where the
+// user has explicitly bounded the upper end and expects all matching
+// entries.
+func defaultTailIfUnbounded(bounded bool, tail int) int {
+	if !bounded && tail == 0 {
 		return 100
 	}
 	return tail
@@ -519,7 +527,7 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	tail := defaultTailIfUnbounded(logsMsgSince, logsMsgTail)
+	tail := defaultTailIfUnbounded(logsMsgSince != "", logsMsgTail)
 
 	cl, err := createClient(cfg)
 	if err != nil {

@@ -415,7 +415,7 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	tail := defaultTailIfUnbounded(logsTxSince, logsTxTail)
+	tail := defaultTailIfUnbounded(logsTxSince != "" || logsTxUntil != "", logsTxTail)
 
 	cl, err := createClient(cfg)
 	if err != nil {

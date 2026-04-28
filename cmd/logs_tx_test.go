@@ -1181,6 +1181,37 @@ func TestFallbackRetryTop(t *testing.T) {
 	}
 }
 
+// TestRunLogsTx_UntilOnlyDoesNotCap is a regression guard. Previously,
+// `tm1cli logs tx --until X` (no --since, no --tail) silently capped
+// results to the latest 100 entries before X, because the boundedness
+// check only considered --since. An analyst auditing "all changes before
+// incident X" would miss older entries with no warning.
+func TestRunLogsTx_UntilOnlyDoesNotCap(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxUntil = "2030-01-01T00:00:00Z"
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(transactionLogJSON())
+	})
+
+	captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(capturedQuery)
+	if strings.Contains(decoded, "$top=") {
+		t.Errorf("--until alone should NOT impose a $top cap; query was %q", decoded)
+	}
+	if !strings.Contains(decoded, "TimeStamp le 2030-01-01T00:00:00Z") {
+		t.Errorf("query %q should still bound by TimeStamp le", decoded)
+	}
+}
+
 func TestRunLogsTx_NoFallbackOn401(t *testing.T) {
 	resetCmdFlags(t)
 	logsTxCube = "Sales"

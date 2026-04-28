@@ -671,20 +671,20 @@ func TestIsFilterRejection(t *testing.T) {
 
 func TestDefaultTailIfUnbounded(t *testing.T) {
 	tests := []struct {
-		name  string
-		since string
-		tail  int
-		want  int
+		name    string
+		bounded bool
+		tail    int
+		want    int
 	}{
-		{"no flags defaults to 100", "", 0, 100},
-		{"explicit tail preserved", "", 50, 50},
-		{"since set, tail stays 0", "2026-04-25T10:00:00Z", 0, 0},
-		{"both set", "2026-04-25T10:00:00Z", 50, 50},
+		{"no bound, no tail defaults to 100", false, 0, 100},
+		{"no bound, explicit tail preserved", false, 50, 50},
+		{"bounded by time, tail stays 0", true, 0, 0},
+		{"bounded by time + tail set", true, 50, 50},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := defaultTailIfUnbounded(tt.since, tt.tail); got != tt.want {
-				t.Errorf("defaultTailIfUnbounded(%q, %d) = %d, want %d", tt.since, tt.tail, got, tt.want)
+			if got := defaultTailIfUnbounded(tt.bounded, tt.tail); got != tt.want {
+				t.Errorf("defaultTailIfUnbounded(%v, %d) = %d, want %d", tt.bounded, tt.tail, got, tt.want)
 			}
 		})
 	}
