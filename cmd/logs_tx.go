@@ -88,13 +88,30 @@ func formatTxValue(raw json.RawMessage) string {
 	return trimmed
 }
 
-// txIDKey returns the dedupe map key for a transaction-log entry. Zero means
-// the server omitted ID — those entries skip dedupe registration.
-func txIDKey(id int64) string {
-	if id == 0 {
-		return ""
+// txIDKey returns the dedupe key for a transaction-log entry. When TM1
+// supplies ID we use it directly. When ID is omitted (older versions) we
+// synthesize a key from the observable fields so same-timestamp entries
+// can be distinguished — important for tx logs where batch writes / TI
+// processes commonly emit multiple changes at the same exact timestamp.
+// Two functionally identical events (same content, same timestamp) hash
+// to the same key, which is the right behavior — they are indistinguishable.
+func txIDKey(e model.TransactionLogEntry) string {
+	if e.ID != 0 {
+		return strconv.FormatInt(e.ID, 10)
 	}
-	return strconv.FormatInt(id, 10)
+	// 0x1f (unit separator) is illegal in TM1 names and OData strings, so
+	// it cannot appear inside any field — safe as a delimiter.
+	const sep = "\x1f"
+	return strings.Join([]string{
+		"syn",
+		e.TimeStamp,
+		e.User,
+		e.Cube,
+		strings.Join(e.Tuple, sep),
+		string(e.OldValue),
+		string(e.NewValue),
+		e.StatusMessage,
+	}, sep)
 }
 
 // tupleString renders a TM1 cell coordinate as colon-joined elements, matching
@@ -163,6 +180,7 @@ func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) (
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jerr)
 			}
 			emitFallbackWarning(retryTop, len(resp.Value))
+			warnIfPaginated(resp.NextLink)
 			return resp.Value, true, nil
 		}
 		return nil, false, err
@@ -171,6 +189,7 @@ func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) (
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, false, fmt.Errorf("cannot parse server response: %w", err)
 	}
+	warnIfPaginated(resp.NextLink)
 	return resp.Value, false, nil
 }
 
@@ -263,18 +282,17 @@ func boundaryTxIDs(entries []model.TransactionLogEntry) (string, map[string]stru
 		if e.TimeStamp != maxTS {
 			continue
 		}
-		if key := txIDKey(e.ID); key != "" {
-			ids[key] = struct{}{}
-		}
+		ids[txIDKey(e)] = struct{}{}
 	}
 	return maxTS, ids
 }
 
 // initialFollowWatermark composes boundaryTxIDs + advanceWatermark +
 // resolveFollowWatermark to produce the starting (watermarkTS, watermarkIDs)
-// pair for follow polls. The advanceWatermark step is critical when TM1
-// omits ID (older versions): with no IDs to dedupe against, the inclusive
-// `TimeStamp ge` filter on the first poll would re-emit the boundary entry.
+// pair for follow polls. txIDKey synthesizes content-based keys when TM1
+// omits ID, so boundaryTxIDs returns a non-empty dedup set for any
+// non-empty entries — making advanceWatermark a defensive no-op in that
+// case. It still runs to handle the truly-empty (no entries) edge case.
 func initialFollowWatermark(entries []model.TransactionLogEntry, sinceTS string, now time.Time) (string, map[string]struct{}) {
 	maxTS, ids := boundaryTxIDs(entries)
 	maxTS, ids = advanceWatermark(maxTS, ids)
@@ -348,10 +366,8 @@ func followTxLogs(ctx context.Context, cl *client.Client, watermarkTS string, wa
 		// Drop boundary duplicates first (clock-skew dedupe).
 		filtered := entries[:0]
 		for _, e := range entries {
-			if key := txIDKey(e.ID); key != "" {
-				if _, seen := watermarkIDs[key]; seen {
-					continue
-				}
+			if _, seen := watermarkIDs[txIDKey(e)]; seen {
+				continue
 			}
 			filtered = append(filtered, e)
 		}
@@ -376,7 +392,17 @@ func followTxLogs(ctx context.Context, cl *client.Client, watermarkTS string, wa
 		}
 
 		if seenMaxTS != "" {
-			watermarkTS, watermarkIDs = advanceWatermark(seenMaxTS, seenIDs)
+			// When the new boundary timestamp matches the prior watermark,
+			// MERGE the new IDs into the existing dedup set. Replacing would
+			// drop prior boundary IDs and re-emit them on the next poll if
+			// the server keeps returning them at the same TimeStamp.
+			if seenMaxTS == watermarkTS {
+				for k, v := range seenIDs {
+					watermarkIDs[k] = v
+				}
+			} else {
+				watermarkTS, watermarkIDs = advanceWatermark(seenMaxTS, seenIDs)
+			}
 		}
 	}
 }

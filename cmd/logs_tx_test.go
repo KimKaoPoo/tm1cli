@@ -124,22 +124,47 @@ func TestFormatTxValue(t *testing.T) {
 // ============================================================
 
 func TestTxIDKey(t *testing.T) {
-	tests := []struct {
-		id   int64
-		want string
-	}{
-		{0, ""},
-		{1, "1"},
-		{12345, "12345"},
-		{9223372036854775807, "9223372036854775807"}, // max int64
-	}
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("id=%d", tt.id), func(t *testing.T) {
-			if got := txIDKey(tt.id); got != tt.want {
-				t.Errorf("txIDKey(%d) = %q, want %q", tt.id, got, tt.want)
-			}
-		})
-	}
+	t.Run("uses ID when present", func(t *testing.T) {
+		e := model.TransactionLogEntry{ID: 12345}
+		if got := txIDKey(e); got != "12345" {
+			t.Errorf("txIDKey(ID=12345) = %q, want %q", got, "12345")
+		}
+	})
+	t.Run("max int64", func(t *testing.T) {
+		e := model.TransactionLogEntry{ID: 9223372036854775807}
+		if got := txIDKey(e); got != "9223372036854775807" {
+			t.Errorf("txIDKey(maxInt64) = %q", got)
+		}
+	})
+	t.Run("synthesizes key when ID omitted", func(t *testing.T) {
+		e := model.TransactionLogEntry{
+			ID: 0, TimeStamp: "2026-04-25T10:00:00Z", User: "u", Cube: "C",
+			Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`),
+		}
+		got := txIDKey(e)
+		if got == "" {
+			t.Errorf("txIDKey for ID=0 must synthesize a non-empty key")
+		}
+		if !strings.HasPrefix(got, "syn") {
+			t.Errorf("synthetic key should be prefixed to avoid colliding with numeric IDs, got %q", got)
+		}
+	})
+	t.Run("synthesized keys differ for distinct same-timestamp entries", func(t *testing.T) {
+		ts := "2026-04-25T10:00:00Z"
+		a := model.TransactionLogEntry{ID: 0, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)}
+		b := model.TransactionLogEntry{ID: 0, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"y"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`2`)}
+		if txIDKey(a) == txIDKey(b) {
+			t.Errorf("distinct same-timestamp entries must produce distinct synth keys")
+		}
+	})
+	t.Run("synthesized keys match for identical entries", func(t *testing.T) {
+		ts := "2026-04-25T10:00:00Z"
+		a := model.TransactionLogEntry{ID: 0, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)}
+		b := model.TransactionLogEntry{ID: 0, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)}
+		if txIDKey(a) != txIDKey(b) {
+			t.Errorf("identical entries must produce identical synth keys")
+		}
+	})
 }
 
 // ============================================================
@@ -408,17 +433,23 @@ func TestBoundaryTxIDs(t *testing.T) {
 		}
 	})
 
-	t.Run("ID-less entries skipped from dedupe set", func(t *testing.T) {
+	t.Run("ID-less entries get synthetic dedupe key", func(t *testing.T) {
+		// Older TM1 omits ID. Synthetic content keys preserve dedupe coverage
+		// without skipping the entry — important for tx logs where same-
+		// timestamp batch writes are common.
 		entries := []model.TransactionLogEntry{
-			{ID: 0, TimeStamp: "2026-04-25T12:00:00Z"},
+			{ID: 0, TimeStamp: "2026-04-25T12:00:00Z", User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
 			{ID: 5, TimeStamp: "2026-04-25T12:00:00Z"},
 		}
 		ts, ids := boundaryTxIDs(entries)
 		if ts != "2026-04-25T12:00:00Z" {
 			t.Errorf("ts = %q", ts)
 		}
-		if len(ids) != 1 {
-			t.Errorf("ID-less entry should be skipped; got %v", ids)
+		if len(ids) != 2 {
+			t.Errorf("both boundary entries should be in dedupe set (one numeric, one synthetic); got %d: %v", len(ids), ids)
+		}
+		if _, ok := ids["5"]; !ok {
+			t.Errorf("numeric ID should appear as-is, got %v", ids)
 		}
 	})
 }
@@ -1156,29 +1187,28 @@ func TestRunLogsTx_FilterFallbackBuffersTailForCubeFilter(t *testing.T) {
 	}
 }
 
-// TestInitialFollowWatermark_AdvancesPastBoundaryWhenIDsOmitted is a
-// regression guard for older TM1 versions where TransactionLogEntries omits
-// the ID field. boundaryTxIDs then returns an empty dedupe set, and the
-// inclusive `TimeStamp ge` filter on the first follow poll would re-emit
-// the boundary entry. initialFollowWatermark must advance the watermark
-// past the boundary so the first poll's filter excludes it.
-func TestInitialFollowWatermark_AdvancesPastBoundaryWhenIDsOmitted(t *testing.T) {
+// TestInitialFollowWatermark_DedupesBoundaryWhenIDsOmitted is a regression
+// guard for older TM1 versions where TransactionLogEntries omits the ID
+// field. The watermark stays at the boundary timestamp (so same-timestamp
+// new arrivals on the next poll aren't skipped — common in tx logs where
+// batch writes share a timestamp), and the dedup set holds a synthetic
+// content key so the boundary entry isn't re-emitted.
+func TestInitialFollowWatermark_DedupesBoundaryWhenIDsOmitted(t *testing.T) {
 	boundaryTS := "2026-04-25T10:01:00Z"
 	entries := []model.TransactionLogEntry{
 		{ID: 0, TimeStamp: boundaryTS, User: "u", Cube: "C", Tuple: []string{"x"},
 			OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
 	}
 	maxTS, ids := initialFollowWatermark(entries, "", time.Now())
-	if len(ids) != 0 {
-		t.Errorf("expected empty dedupe set when ID omitted, got %v", ids)
+	if maxTS != boundaryTS {
+		t.Errorf("watermark should stay at boundary %s (synthetic key handles dedupe), got %s", boundaryTS, maxTS)
 	}
-	boundary, _ := parseTimeStamp(boundaryTS)
-	advanced, err := parseTimeStamp(maxTS)
-	if err != nil {
-		t.Fatalf("watermark unparseable: %v", err)
+	if len(ids) != 1 {
+		t.Errorf("expected synthetic dedupe key for ID-less boundary entry, got %v", ids)
 	}
-	if !advanced.After(boundary) {
-		t.Errorf("watermark %s should be after boundary %s — first poll would re-emit it", maxTS, boundaryTS)
+	wantKey := txIDKey(entries[0])
+	if _, ok := ids[wantKey]; !ok {
+		t.Errorf("dedup set should contain synthetic key %q, got %v", wantKey, ids)
 	}
 }
 
@@ -1642,5 +1672,126 @@ func TestFollowTxLogs_DropsDuplicateIDsAtBoundary(t *testing.T) {
 	countB := strings.Count(out.Stdout, "2026-04-25T10:02:00Z")
 	if countB != 1 {
 		t.Errorf("entry B should appear exactly once, got %d times in:\n%s", countB, out.Stdout)
+	}
+}
+
+// TestFollowTxLogs_MergesBoundaryIDsAcrossSameTimestampPolls is a regression
+// guard for the prior bug where each poll *replaced* the dedup set with the
+// IDs of post-dedup boundary entries. When new entries arrived at the same
+// timestamp as the prior watermark, the old boundary IDs were dropped and
+// the server's next response re-emitted them.
+//
+// Sequence:
+//   poll1: server returns [A@T]. dedup set becomes {A}.
+//   poll2: server returns [A@T, B@T] (B is new at the same timestamp).
+//          Dedup drops A, leaves [B]. Without the merge, dedup set becomes {B}.
+//   poll3: server returns [A@T, B@T] again (A is at the inclusive lower bound).
+//          Dedup against {B} only drops B — A is re-emitted. With the merge,
+//          dedup set is {A,B} and both are dropped.
+func TestFollowTxLogs_MergesBoundaryIDsAcrossSameTimestampPolls(t *testing.T) {
+	resetCmdFlags(t)
+
+	const ts = "2026-04-25T10:00:00Z"
+	entryA := model.TransactionLogEntry{ID: 1, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)}
+	entryB := model.TransactionLogEntry{ID: 2, TimeStamp: ts, User: "u", Cube: "C", Tuple: []string{"y"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`2`)}
+
+	var pollCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(atomic.AddInt32(&pollCount, 1))
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 1:
+			// Initial follow has already emitted [A]; pretend B just arrived.
+			w.Write(transactionLogJSON(entryA, entryB))
+		default:
+			// Subsequent polls keep returning the boundary entries — server's
+			// inclusive `TimeStamp ge ts` always includes them.
+			w.Write(transactionLogJSON(entryA, entryB))
+		}
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out := captureAll(t, func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Start with watermarkIDs={1} (A already seen) and watermarkTS=ts.
+			// Raw mode keeps each entry on a single line with deterministic
+			// "old -> new" formatting we can count on.
+			followTxLogs(ctx, cl, ts, map[string]struct{}{"1": {}}, "", "", 5*time.Millisecond, false, true)
+		}()
+		for i := 0; i < 200; i++ {
+			if atomic.LoadInt32(&pollCount) >= 3 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	})
+
+	// B should appear exactly once (emitted on poll1).
+	if got := strings.Count(out.Stdout, "0 -> 2"); got != 1 {
+		t.Errorf("entry B should appear exactly once, got %d:\n%s", got, out.Stdout)
+	}
+	// A should NEVER appear (it was already in the prior dedup set, and the
+	// merge keeps it across same-timestamp polls).
+	if got := strings.Count(out.Stdout, "0 -> 1"); got != 0 {
+		t.Errorf("entry A should not be re-emitted across polls, got %d times:\n%s", got, out.Stdout)
+	}
+}
+
+// TestFetchTxEntries_WarnsOnPaginatedResponse is a regression guard ensuring
+// the @odata.nextLink continuation marker isn't silently dropped. Without
+// the warning, large --since/--until windows could return only the first
+// server page with no signal that the result set is incomplete.
+func TestFetchTxEntries_WarnsOnPaginatedResponse(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"value":[],"@odata.nextLink":"TransactionLogEntries?$skiptoken=42"}`)
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	out := captureAll(t, func() {
+		_, _, err := fetchTxEntries(cl, "", 0, false)
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	if !strings.Contains(out.Stderr, "paginated") {
+		t.Errorf("stderr should warn about paginated response, got: %q", out.Stderr)
+	}
+}
+
+// TestFetchTxEntries_NoWarningWhenNotPaginated is a sanity check that the
+// pagination warning only fires when @odata.nextLink is present.
+func TestFetchTxEntries_NoWarningWhenNotPaginated(t *testing.T) {
+	resetCmdFlags(t)
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"value":[]}`)
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+
+	out := captureAll(t, func() {
+		_, _, err := fetchTxEntries(cl, "", 0, false)
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	if strings.Contains(out.Stderr, "paginated") {
+		t.Errorf("stderr should not warn about pagination on full response, got: %q", out.Stderr)
 	}
 }

@@ -213,6 +213,17 @@ func fallbackRetryTop(top int) int {
 	return top * fallbackTailMultiplier
 }
 
+// warnIfPaginated emits a one-shot warning when the server response carries
+// an OData @odata.nextLink. The fetch path does not follow continuations,
+// so without this warning the result set would silently truncate at the
+// first server page — a particular hazard for long --since/--until windows.
+func warnIfPaginated(nextLink string) {
+	if nextLink == "" {
+		return
+	}
+	output.PrintWarning("Server returned a paginated response; results may be truncated. Narrow --since/--until or set --tail to widen the visible window.")
+}
+
 // emitFallbackWarning prints the disclosure shown when the server rejects
 // $filter and the client retries unfiltered. retryTop is the over-fetch
 // window (always disclosed so users know the local filter is bounded);

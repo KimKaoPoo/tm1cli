@@ -23,6 +23,11 @@ type TransactionLogEntry struct {
 }
 
 // TransactionLogResponse is the OData collection wrapper.
+//
+// NextLink is set by TM1 when the response is paginated and more entries
+// are available beyond Value. Callers must surface this to the user (or
+// follow it) — silently dropping it leaves results incomplete.
 type TransactionLogResponse struct {
-	Value []TransactionLogEntry `json:"value"`
+	Value    []TransactionLogEntry `json:"value"`
+	NextLink string                `json:"@odata.nextLink,omitempty"`
 }
