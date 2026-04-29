@@ -1760,7 +1760,7 @@ func TestFetchTxEntries_WarnsOnPaginatedResponse(t *testing.T) {
 	cl, _ := createClient(cfg)
 
 	out := captureAll(t, func() {
-		_, _, err := fetchTxEntries(cl, "", 0, false)
+		_, _, err := fetchTxEntries(cl, "", 0, false, false, false)
 		if err != nil {
 			t.Fatalf("unexpected: %v", err)
 		}
@@ -1768,6 +1768,113 @@ func TestFetchTxEntries_WarnsOnPaginatedResponse(t *testing.T) {
 
 	if !strings.Contains(out.Stderr, "paginated") {
 		t.Errorf("stderr should warn about paginated response, got: %q", out.Stderr)
+	}
+}
+
+// TestRunLogsTx_FallbackUsesAscOrderForUntilOnlyForensicQuery is a
+// regression guard for the silent-empty-result bug: with --until alone
+// (forensic / audit query), DESC retry would return the latest 1000 rows
+// — all newer than untilTS — and applyTxClientFilters would drop them all.
+// Output: empty, no error, missed historical entries. The fallback must
+// retry ASC so the cap captures the OLDEST rows (most likely before
+// untilTS), and emit a warning explaining --until cannot be enforced
+// server-side under fallback.
+func TestRunLogsTx_FallbackUsesAscOrderForUntilOnlyForensicQuery(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxUntil = "2030-01-01T00:00:00Z"
+
+	var capturedRetryQuery string
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		capturedRetryQuery = r.URL.RawQuery
+		w.Write(transactionLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(capturedRetryQuery)
+	if strings.Contains(decoded, "$orderby=TimeStamp desc") {
+		t.Errorf("retry for --until-only forensic query should NOT use DESC ordering (DESC returns the latest rows, all newer than untilTS); got %q", decoded)
+	}
+	if !strings.Contains(out.Stderr, "--until cannot be enforced server-side") {
+		t.Errorf("stderr should warn that --until is unenforceable under fallback, got: %q", out.Stderr)
+	}
+}
+
+// TestRunLogsTx_FallbackUsesDescOrderForSinceQuery verifies the retry stays
+// DESC when --since is set (with or without --until) — the user wants the
+// latest entries within the window, not the oldest entries since epoch.
+func TestRunLogsTx_FallbackUsesDescOrderForSinceQuery(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxSince = "2026-04-25T10:00:00Z"
+	logsTxUntil = "2030-01-01T00:00:00Z"
+
+	var capturedRetryQuery string
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		capturedRetryQuery = r.URL.RawQuery
+		w.Write(transactionLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(capturedRetryQuery)
+	if !strings.Contains(decoded, "$orderby=TimeStamp desc") {
+		t.Errorf("retry with --since should keep DESC ordering, got %q", decoded)
+	}
+	// --until is set, so the warning must still fire.
+	if !strings.Contains(out.Stderr, "--until cannot be enforced server-side") {
+		t.Errorf("stderr should still warn about --until limitation, got: %q", out.Stderr)
+	}
+}
+
+// TestRunLogsTx_FallbackNoUntilWarningWhenUntilUnset is a sanity check.
+func TestRunLogsTx_FallbackNoUntilWarningWhenUntilUnset(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxSince = "2026-04-25T10:00:00Z"
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		w.Write(transactionLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	if strings.Contains(out.Stderr, "--until cannot be enforced") {
+		t.Errorf("--until warning should not fire when --until is unset, got: %q", out.Stderr)
 	}
 }
 
@@ -1785,7 +1892,7 @@ func TestFetchTxEntries_NoWarningWhenNotPaginated(t *testing.T) {
 	cl, _ := createClient(cfg)
 
 	out := captureAll(t, func() {
-		_, _, err := fetchTxEntries(cl, "", 0, false)
+		_, _, err := fetchTxEntries(cl, "", 0, false, false, false)
 		if err != nil {
 			t.Fatalf("unexpected: %v", err)
 		}

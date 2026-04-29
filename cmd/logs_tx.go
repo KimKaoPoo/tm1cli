@@ -163,15 +163,31 @@ func buildTxQuery(filter string, top int, orderDesc bool) string {
 // it retries without $filter (over-fetching via fallbackRetryTop when --tail
 // is set so client-side filtering has room to find matches) and returns
 // fallback=true. On auth/not-found/network errors the error propagates unchanged.
-func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) ([]model.TransactionLogEntry, bool, error) {
+//
+// sinceSet/untilSet steer the retry order so the cap captures the right slice
+// of the log:
+//   - --until alone (forensic / audit) → retry ASC; the OLDEST entries are
+//     most likely to fall before untilTS, whereas DESC would return the
+//     latest N rows (all newer than untilTS) and silently produce empty output.
+//   - --since (with or without --until) → retry DESC so the cap retains the
+//     latest entries within the window; the user normally cares about recent
+//     data filtered by --since.
+//   - neither → retry DESC (latest rows by default).
+//
+// When untilSet is true and the fallback fires, an additional warning is
+// emitted: --until cannot be enforced server-side without $filter, so
+// historical entries past the retry window will be missed.
+func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc, sinceSet, untilSet bool) ([]model.TransactionLogEntry, bool, error) {
 	endpoint := buildTxQuery(filter, top, orderDesc)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
 			retryTop := fallbackRetryTop(top)
-			// Force DESC on retry so the cap retains the most recent entries —
-			// otherwise a --since query could return the oldest 1000 since epoch.
-			retryData, retryErr := cl.Get(buildTxQuery("", retryTop, true))
+			retryDesc := true
+			if untilSet && !sinceSet {
+				retryDesc = false
+			}
+			retryData, retryErr := cl.Get(buildTxQuery("", retryTop, retryDesc))
 			if retryErr != nil {
 				return nil, false, retryErr
 			}
@@ -180,6 +196,9 @@ func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) (
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jerr)
 			}
 			emitFallbackWarning(retryTop, len(resp.Value))
+			if untilSet {
+				output.PrintWarning("--until cannot be enforced server-side under fallback; historical entries past the retry window will be missed. Narrow --tail, set --since, or accept the limitation.")
+			}
 			warnIfPaginated(resp.NextLink)
 			return resp.Value, true, nil
 		}
@@ -357,7 +376,9 @@ func followTxLogs(ctx context.Context, cl *client.Client, watermarkTS string, wa
 		}
 
 		filter := buildTxFilter(watermarkTS, "", cube, user)
-		entries, fallback, err := fetchTxEntries(cl, filter, 0, false)
+		// --until is mutually exclusive with --follow, so untilSet is false.
+		// sinceSet is true because the watermark itself is a since-anchor.
+		entries, fallback, err := fetchTxEntries(cl, filter, 0, false, true, false)
 		if err != nil {
 			output.PrintWarning(fmt.Sprintf("poll failed: %s", err))
 			continue
@@ -461,7 +482,7 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 	}
 
 	filter := buildTxFilter(sinceTS, untilTS, logsTxCube, logsTxUser)
-	entries, fallback, err := fetchTxEntries(cl, filter, tail, tail > 0)
+	entries, fallback, err := fetchTxEntries(cl, filter, tail, tail > 0, sinceTS != "", untilTS != "")
 	if err != nil {
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
