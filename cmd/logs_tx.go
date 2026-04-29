@@ -162,7 +162,7 @@ func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc bool) (
 			if jerr := json.Unmarshal(retryData, &resp); jerr != nil {
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jerr)
 			}
-			output.PrintWarning("Server-side filter not supported, filtering locally...")
+			emitFallbackWarning(retryTop, len(resp.Value))
 			return resp.Value, true, nil
 		}
 		return nil, false, err

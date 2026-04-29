@@ -213,6 +213,24 @@ func fallbackRetryTop(top int) int {
 	return top * fallbackTailMultiplier
 }
 
+// emitFallbackWarning prints the disclosure shown when the server rejects
+// $filter and the client retries unfiltered. retryTop is the over-fetch
+// window (always disclosed so users know the local filter is bounded);
+// gotRows is the row count the retry returned. When gotRows >= retryTop
+// the cap was hit, so an additional warning flags likely truncation.
+func emitFallbackWarning(retryTop, gotRows int) {
+	output.PrintWarning(fmt.Sprintf(
+		"Server-side filter not supported; filtering locally over the most recent %d entries — results may be incomplete",
+		retryTop,
+	))
+	if gotRows >= retryTop {
+		output.PrintWarning(fmt.Sprintf(
+			"Hit fallback cap of %d entries; narrow --since/--until or increase --tail to widen the window",
+			retryTop,
+		))
+	}
+}
+
 // fetchMessageLogEntries performs GET. On HTTP 400/501 with a filter-rejection body,
 // it retries without $filter (over-fetching via fallbackRetryTop when --tail is
 // set so client-side filtering has room to find matches) and returns fallback=true.
@@ -235,7 +253,7 @@ func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc
 			if jsonErr := json.Unmarshal(retryData, &resp); jsonErr != nil {
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jsonErr)
 			}
-			output.PrintWarning("Server-side filter not supported, filtering locally...")
+			emitFallbackWarning(retryTop, len(resp.Value))
 			return resp.Value, true, nil
 		}
 		return nil, false, err

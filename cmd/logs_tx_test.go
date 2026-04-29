@@ -1156,6 +1156,118 @@ func TestRunLogsTx_FilterFallbackBuffersTailForCubeFilter(t *testing.T) {
 	}
 }
 
+// TestRunLogsTx_FallbackWarningDisclosesCap verifies the fallback warning
+// states the row cap so users know the local filter is bounded. Without
+// disclosure, a --since query that hits the cap silently drops matching
+// entries while the warning falsely implies a complete local filter.
+func TestRunLogsTx_FallbackWarningDisclosesCap(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxSince = "2026-04-25T10:00:00Z"
+	logsTxCube = "Sales"
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		w.Write(transactionLogJSON())
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	wantCap := fmt.Sprintf("most recent %d entries", fallbackSafetyCap)
+	if !strings.Contains(out.Stderr, wantCap) {
+		t.Errorf("fallback warning should disclose row cap %q, got: %q", wantCap, out.Stderr)
+	}
+}
+
+// TestRunLogsTx_FallbackAtCapWarnsTruncation verifies the second warning
+// fires when the retry returns exactly retryTop rows — a strong signal the
+// cap was hit and matches likely exist beyond the window.
+func TestRunLogsTx_FallbackAtCapWarnsTruncation(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxTail = 5
+	logsTxCube = "Sales"
+
+	const retryTop = 5 * fallbackTailMultiplier // 50, matches fallbackRetryTop(5)
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		entries := make([]model.TransactionLogEntry, 0, retryTop)
+		for i := 0; i < retryTop; i++ {
+			entries = append(entries, model.TransactionLogEntry{
+				ID:        int64(i + 1),
+				TimeStamp: time.Date(2026, 4, 25, 10, 0, i, 0, time.UTC).Format(time.RFC3339),
+				User:      "u",
+				Cube:      "Sales",
+				Tuple:     []string{"x"},
+				OldValue:  json.RawMessage(`0`),
+				NewValue:  json.RawMessage(`1`),
+			})
+		}
+		w.Write(transactionLogJSON(entries...))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	wantCapMsg := fmt.Sprintf("Hit fallback cap of %d", retryTop)
+	if !strings.Contains(out.Stderr, wantCapMsg) {
+		t.Errorf("at-cap retry should emit truncation warning %q, got: %q", wantCapMsg, out.Stderr)
+	}
+}
+
+// TestRunLogsTx_FallbackBelowCapNoTruncationWarning verifies the second
+// warning does NOT fire when the retry returns fewer rows than retryTop —
+// in that case there are no entries beyond the window, so warning the user
+// about truncation would be misleading.
+func TestRunLogsTx_FallbackBelowCapNoTruncationWarning(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxCube = "Sales"
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		w.Write(transactionLogJSON(
+			model.TransactionLogEntry{ID: 1, TimeStamp: "2026-04-25T10:00:00Z", User: "u", Cube: "Sales", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+		))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	if strings.Contains(out.Stderr, "Hit fallback cap") {
+		t.Errorf("below-cap retry should not emit truncation warning, got: %q", out.Stderr)
+	}
+}
+
 // TestFallbackRetryTop covers the helper directly.
 func TestFallbackRetryTop(t *testing.T) {
 	tests := []struct {
