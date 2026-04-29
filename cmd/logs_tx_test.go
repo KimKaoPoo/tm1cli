@@ -1771,6 +1771,128 @@ func TestFetchTxEntries_WarnsOnPaginatedResponse(t *testing.T) {
 	}
 }
 
+// TestFollowTxLogs_FallbackDoesNotRegressWatermark is a regression guard
+// for a P0 bug where filter-fallback in --follow mode regressed the
+// watermark backwards on quiet polls. Sequence:
+//   - Initial state: watermarkTS=T2, watermarkIDs={2}.
+//   - Poll1: server rejects $filter, retry returns DESC unfiltered list
+//     [B@T2, A@T1]. Dedup against {2} drops B, leaving [A@T1].
+//     boundaryTxIDs([A]) yields seenMaxTS=T1 — STRICTLY EARLIER than the
+//     prior watermark T2.
+//   - With the bug: watermarkTS regresses to T1, watermarkIDs forgets {2}.
+//     Poll2 then re-emits B because B is no longer in the dedup set.
+//   - With the fix: watermark stays at T2 (older boundary ignored), B is
+//     never re-emitted across polls.
+func TestFollowTxLogs_FallbackDoesNotRegressWatermark(t *testing.T) {
+	resetCmdFlags(t)
+
+	const t1 = "2026-04-25T10:00:00Z"
+	const t2 = "2026-04-25T11:00:00Z"
+	entryA := model.TransactionLogEntry{ID: 1, TimeStamp: t1, User: "u", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)}
+	entryB := model.TransactionLogEntry{ID: 2, TimeStamp: t2, User: "u", Cube: "C", Tuple: []string{"y"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`2`)}
+
+	var pollCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&pollCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		// Every poll: first request hits filter rejection, second is the
+		// unfiltered DESC retry returning both boundary entries.
+		if r.URL.Query().Get("$filter") != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		_ = n
+		w.Write(transactionLogJSON(entryB, entryA))
+	})
+
+	cfg, _ := loadConfig()
+	cl, _ := createClient(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out := captureAll(t, func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Watermark at T2 with B already in dedup set.
+			followTxLogs(ctx, cl, t2, map[string]struct{}{"2": {}}, "", "", 5*time.Millisecond, false, true)
+		}()
+		for i := 0; i < 200; i++ {
+			if atomic.LoadInt32(&pollCount) >= 6 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	})
+
+	// B (already seen, T2) must NEVER be re-emitted regardless of poll count.
+	if got := strings.Count(out.Stdout, "0 -> 2"); got != 0 {
+		t.Errorf("entry B should never be re-emitted, got %d times:\n%s", got, out.Stdout)
+	}
+	// A is at T1 < watermarkTS T2 — server returns it under fallback because
+	// $filter is gone, but client-side since-filter (set to watermarkTS) should
+	// drop it. So A should also not appear.
+	if got := strings.Count(out.Stdout, "0 -> 1"); got != 0 {
+		t.Errorf("entry A is older than watermark and should be dropped client-side, got %d times:\n%s", got, out.Stdout)
+	}
+}
+
+// TestRunLogsTx_FallbackTailKeepsLatestUnderAscRetry is a regression guard
+// for a P0 bug where --until --tail N under filter-fallback returned the
+// OLDEST N entries instead of the LATEST N. Because --until-only forensic
+// queries trigger ASC retry, the unfiltered cap was oldest-first, and the
+// naive `entries[:tail]` truncation kept oldest rather than latest.
+func TestRunLogsTx_FallbackTailKeepsLatestUnderAscRetry(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxUntil = "2030-01-01T00:00:00Z"
+	logsTxTail = 3
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		// ASC retry: server returns oldest-first.
+		entries := make([]model.TransactionLogEntry, 0, 10)
+		for i := 0; i < 10; i++ {
+			entries = append(entries, model.TransactionLogEntry{
+				ID:        int64(i + 1),
+				TimeStamp: time.Date(2026, 4, 25, 10, i, 0, 0, time.UTC).Format(time.RFC3339),
+				User:      fmt.Sprintf("u%d", i),
+				Cube:      "C",
+				Tuple:     []string{"x"},
+				OldValue:  json.RawMessage(`0`),
+				NewValue:  json.RawMessage(`1`),
+			})
+		}
+		w.Write(transactionLogJSON(entries...))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	// --tail 3 must keep the LATEST 3 (u7, u8, u9), NOT the oldest 3 (u0..u2).
+	for _, oldest := range []string{"u0", "u1", "u2"} {
+		if strings.Contains(out.Stdout, oldest) {
+			t.Errorf("--tail under ASC fallback should keep latest, but found oldest user %q in output:\n%s", oldest, out.Stdout)
+		}
+	}
+	for _, latest := range []string{"u7", "u8", "u9"} {
+		if !strings.Contains(out.Stdout, latest) {
+			t.Errorf("--tail under ASC fallback should keep latest user %q, missing from output:\n%s", latest, out.Stdout)
+		}
+	}
+}
+
 // TestRunLogsTx_FallbackUsesAscOrderForUntilOnlyForensicQuery is a
 // regression guard for the silent-empty-result bug: with --until alone
 // (forensic / audit query), DESC retry would return the latest 1000 rows

@@ -413,17 +413,25 @@ func followTxLogs(ctx context.Context, cl *client.Client, watermarkTS string, wa
 		}
 
 		if seenMaxTS != "" {
-			// When the new boundary timestamp matches the prior watermark,
-			// MERGE the new IDs into the existing dedup set. Replacing would
-			// drop prior boundary IDs and re-emit them on the next poll if
-			// the server keeps returning them at the same TimeStamp.
+			// The watermark must be MONOTONIC — never regress. Under fallback,
+			// the server returns the unfiltered log; dedupe can strip the
+			// latest rows leaving older entries whose seenMaxTS is BEFORE
+			// watermarkTS. Accepting that would forget the prior boundary IDs
+			// and re-emit the original entries on the next poll, indefinitely.
+			seenT, seenErr := parseTimeStamp(seenMaxTS)
+			curT, curErr := parseTimeStamp(watermarkTS)
 			if seenMaxTS == watermarkTS {
+				// Same boundary: MERGE new IDs into the existing dedup set.
+				// Replacing would drop prior boundary IDs and re-emit them
+				// next poll if the server keeps returning them at this TS.
 				for k, v := range seenIDs {
 					watermarkIDs[k] = v
 				}
-			} else {
+			} else if seenErr == nil && (curErr != nil || seenT.After(curT)) {
+				// Strictly later boundary: advance.
 				watermarkTS, watermarkIDs = advanceWatermark(seenMaxTS, seenIDs)
 			}
+			// else: seenMaxTS is older than watermarkTS — ignore (do not regress).
 		}
 	}
 }
@@ -506,8 +514,14 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 
 	// Fallback over-fetches via fallbackTailMultiplier so client-side filtering
 	// has room to find matches; trim back to the user-requested --tail before
-	// display. Server-returned entries are DESC, so [:tail] keeps the newest.
+	// display. We sort DESC first so [:tail] always keeps the LATEST N — the
+	// retry order is conditional (DESC for --since/default, ASC for
+	// --until-only forensic queries), so a naive [:tail] would otherwise
+	// silently keep the OLDEST N under ASC retry, violating --tail semantics.
 	if fallback && tail > 0 && len(entries) > tail {
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].TimeStamp > entries[j].TimeStamp
+		})
 		entries = entries[:tail]
 	}
 
