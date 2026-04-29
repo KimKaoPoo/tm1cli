@@ -1156,6 +1156,51 @@ func TestRunLogsTx_FilterFallbackBuffersTailForCubeFilter(t *testing.T) {
 	}
 }
 
+// TestInitialFollowWatermark_AdvancesPastBoundaryWhenIDsOmitted is a
+// regression guard for older TM1 versions where TransactionLogEntries omits
+// the ID field. boundaryTxIDs then returns an empty dedupe set, and the
+// inclusive `TimeStamp ge` filter on the first follow poll would re-emit
+// the boundary entry. initialFollowWatermark must advance the watermark
+// past the boundary so the first poll's filter excludes it.
+func TestInitialFollowWatermark_AdvancesPastBoundaryWhenIDsOmitted(t *testing.T) {
+	boundaryTS := "2026-04-25T10:01:00Z"
+	entries := []model.TransactionLogEntry{
+		{ID: 0, TimeStamp: boundaryTS, User: "u", Cube: "C", Tuple: []string{"x"},
+			OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+	}
+	maxTS, ids := initialFollowWatermark(entries, "", time.Now())
+	if len(ids) != 0 {
+		t.Errorf("expected empty dedupe set when ID omitted, got %v", ids)
+	}
+	boundary, _ := parseTimeStamp(boundaryTS)
+	advanced, err := parseTimeStamp(maxTS)
+	if err != nil {
+		t.Fatalf("watermark unparseable: %v", err)
+	}
+	if !advanced.After(boundary) {
+		t.Errorf("watermark %s should be after boundary %s — first poll would re-emit it", maxTS, boundaryTS)
+	}
+}
+
+// TestInitialFollowWatermark_KeepsBoundaryWhenIDsPresent verifies the
+// happy-path: when TM1 supplies IDs, the watermark stays at the boundary
+// (so an entry that arrived at the same exact timestamp on the next poll
+// is fetched, then dropped via the dedupe set).
+func TestInitialFollowWatermark_KeepsBoundaryWhenIDsPresent(t *testing.T) {
+	boundaryTS := "2026-04-25T10:01:00Z"
+	entries := []model.TransactionLogEntry{
+		{ID: 42, TimeStamp: boundaryTS, User: "u", Cube: "C", Tuple: []string{"x"},
+			OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+	}
+	maxTS, ids := initialFollowWatermark(entries, "", time.Now())
+	if maxTS != boundaryTS {
+		t.Errorf("watermark should stay at boundary %s, got %s", boundaryTS, maxTS)
+	}
+	if _, ok := ids["42"]; !ok {
+		t.Errorf("dedupe set should contain ID 42, got %v", ids)
+	}
+}
+
 // TestRunLogsTx_FallbackWarningDisclosesCap verifies the fallback warning
 // states the row cap so users know the local filter is bounded. Without
 // disclosure, a --since query that hits the cap silently drops matching

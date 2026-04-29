@@ -270,6 +270,17 @@ func boundaryTxIDs(entries []model.TransactionLogEntry) (string, map[string]stru
 	return maxTS, ids
 }
 
+// initialFollowWatermark composes boundaryTxIDs + advanceWatermark +
+// resolveFollowWatermark to produce the starting (watermarkTS, watermarkIDs)
+// pair for follow polls. The advanceWatermark step is critical when TM1
+// omits ID (older versions): with no IDs to dedupe against, the inclusive
+// `TimeStamp ge` filter on the first poll would re-emit the boundary entry.
+func initialFollowWatermark(entries []model.TransactionLogEntry, sinceTS string, now time.Time) (string, map[string]struct{}) {
+	maxTS, ids := boundaryTxIDs(entries)
+	maxTS, ids = advanceWatermark(maxTS, ids)
+	return resolveFollowWatermark(maxTS, sinceTS, now), ids
+}
+
 // printTxEntries renders entries in the chosen format. In follow+jsonMode it
 // emits NDJSON (one object per line). In raw mode every string field is
 // passed through sanitizeRawMessage so each entry stays on a single line.
@@ -468,8 +479,7 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	maxTS, ids := boundaryTxIDs(entries)
-	maxTS = resolveFollowWatermark(maxTS, sinceTS, time.Now())
+	maxTS, ids := initialFollowWatermark(entries, sinceTS, time.Now())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
