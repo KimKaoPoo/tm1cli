@@ -284,6 +284,30 @@ func sortTxByTimeStamp(entries []model.TransactionLogEntry) {
 	})
 }
 
+// sortTxByTimeStampDesc sorts descending; ties are broken by ID (descending).
+// Unparseable timestamps go to the end stably. Used when fallback truncation
+// must keep the LATEST --tail N entries — raw lexicographic compare on the
+// TimeStamp string disagrees with chronological order whenever TM1 mixes
+// precision (e.g. 10:00:00Z vs 10:00:00.9Z) or offsets.
+func sortTxByTimeStampDesc(entries []model.TransactionLogEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		ti, errI := parseTimeStamp(entries[i].TimeStamp)
+		tj, errJ := parseTimeStamp(entries[j].TimeStamp)
+		switch {
+		case errI != nil && errJ != nil:
+			return false
+		case errI != nil:
+			return false
+		case errJ != nil:
+			return true
+		case ti.Equal(tj):
+			return entries[i].ID > entries[j].ID
+		default:
+			return ti.After(tj)
+		}
+	})
+}
+
 // reverseTxEntries reverses entries in place.
 func reverseTxEntries(entries []model.TransactionLogEntry) {
 	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
@@ -532,10 +556,11 @@ func runLogsTx(cmd *cobra.Command, args []string) error {
 	// retry order is conditional (DESC for --since/default, ASC for
 	// --until-only forensic queries), so a naive [:tail] would otherwise
 	// silently keep the OLDEST N under ASC retry, violating --tail semantics.
+	// Use sortTxByTimeStampDesc (parse + time.After + ID tiebreak) rather
+	// than a raw string compare — TM1 mixes timestamp precision/offsets and
+	// lexicographic order can disagree with chronological order.
 	if fallback && tail > 0 && len(entries) > tail {
-		sort.SliceStable(entries, func(i, j int) bool {
-			return entries[i].TimeStamp > entries[j].TimeStamp
-		})
+		sortTxByTimeStampDesc(entries)
 		entries = entries[:tail]
 	}
 

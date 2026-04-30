@@ -380,6 +380,54 @@ func TestSortTxByTimeStamp(t *testing.T) {
 	})
 }
 
+func TestSortTxByTimeStampDesc(t *testing.T) {
+	t.Run("descending order", func(t *testing.T) {
+		entries := []model.TransactionLogEntry{
+			{ID: 1, TimeStamp: "2026-04-25T10:00:00Z"},
+			{ID: 3, TimeStamp: "2026-04-25T12:00:00Z"},
+			{ID: 2, TimeStamp: "2026-04-25T11:00:00Z"},
+		}
+		sortTxByTimeStampDesc(entries)
+		for i, want := range []int64{3, 2, 1} {
+			if entries[i].ID != want {
+				t.Errorf("entries[%d].ID = %d, want %d", i, entries[i].ID, want)
+			}
+		}
+	})
+
+	t.Run("tie-break by ID descending", func(t *testing.T) {
+		entries := []model.TransactionLogEntry{
+			{ID: 1, TimeStamp: "2026-04-25T10:00:00Z"},
+			{ID: 5, TimeStamp: "2026-04-25T10:00:00Z"},
+			{ID: 3, TimeStamp: "2026-04-25T10:00:00Z"},
+		}
+		sortTxByTimeStampDesc(entries)
+		for i, want := range []int64{5, 3, 1} {
+			if entries[i].ID != want {
+				t.Errorf("entries[%d].ID = %d, want %d", i, entries[i].ID, want)
+			}
+		}
+	})
+
+	// Mixed-precision RFC3339 timestamps: a raw string compare gets this
+	// wrong because "2026-04-25T10:00:00Z" < "2026-04-25T10:00:00.5Z"
+	// lexicographically, but the latter is chronologically later.
+	// sortTxByTimeStampDesc must put 10:00:00.5Z first.
+	t.Run("mixed-precision ordering matches chronology", func(t *testing.T) {
+		entries := []model.TransactionLogEntry{
+			{ID: 1, TimeStamp: "2026-04-25T10:00:00Z"},
+			{ID: 2, TimeStamp: "2026-04-25T10:00:00.5Z"},
+			{ID: 3, TimeStamp: "2026-04-25T10:00:00.250Z"},
+		}
+		sortTxByTimeStampDesc(entries)
+		for i, want := range []int64{2, 3, 1} {
+			if entries[i].ID != want {
+				t.Errorf("entries[%d].ID = %d, want %d (chronological order); got %v", i, entries[i].ID, want, entries)
+			}
+		}
+	})
+}
+
 // ============================================================
 // Unit tests — reverseTxEntries
 // ============================================================
@@ -1897,6 +1945,58 @@ func TestRunLogsTx_FallbackTailKeepsLatestUnderAscRetry(t *testing.T) {
 	for _, latest := range []string{"u7", "u8", "u9"} {
 		if !strings.Contains(out.Stdout, latest) {
 			t.Errorf("--tail under ASC fallback should keep latest user %q, missing from output:\n%s", latest, out.Stdout)
+		}
+	}
+}
+
+// TestRunLogsTx_FallbackTailRespectsChronologyUnderMixedPrecision is a
+// regression guard for a P1 bug where the fallback truncation used a raw
+// string compare on the TimeStamp field. With TM1 mixing precision (e.g.
+// "10:00:00.9Z" vs "10:00:00Z"), lexicographic order disagrees with
+// chronological order: "10:00:00Z" sorts AFTER "10:00:00.9Z" as strings
+// even though it's earlier chronologically. Under fallback truncation
+// to --tail N, the wrong entries would be kept.
+func TestRunLogsTx_FallbackTailRespectsChronologyUnderMixedPrecision(t *testing.T) {
+	resetCmdFlags(t)
+	logsTxUntil = "2030-01-01T00:00:00Z"
+	logsTxTail = 2
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter not supported"}`)
+			return
+		}
+		// ASC retry returns oldest-first, mixing precisions. Chronological
+		// order is u_old < u_mid < u_late_a < u_late_b. Lexicographic order
+		// of TimeStamp would disagree on the fractional vs no-fractional
+		// pair, putting u_late_a (no fraction) before u_late_b's parent.
+		w.Write(transactionLogJSON(
+			model.TransactionLogEntry{ID: 1, TimeStamp: "2026-04-25T09:00:00Z", User: "u_old", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+			model.TransactionLogEntry{ID: 2, TimeStamp: "2026-04-25T10:00:00Z", User: "u_mid", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+			model.TransactionLogEntry{ID: 3, TimeStamp: "2026-04-25T11:00:00.250Z", User: "u_late_a", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+			model.TransactionLogEntry{ID: 4, TimeStamp: "2026-04-25T11:00:00.9Z", User: "u_late_b", Cube: "C", Tuple: []string{"x"}, OldValue: json.RawMessage(`0`), NewValue: json.RawMessage(`1`)},
+		))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsTx(logsTxCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	// --tail 2 must keep the chronologically-latest two: u_late_b then u_late_a.
+	for _, want := range []string{"u_late_a", "u_late_b"} {
+		if !strings.Contains(out.Stdout, want) {
+			t.Errorf("--tail 2 should keep chronologically latest %q, missing:\n%s", want, out.Stdout)
+		}
+	}
+	for _, unwanted := range []string{"u_old", "u_mid"} {
+		if strings.Contains(out.Stdout, unwanted) {
+			t.Errorf("--tail 2 should not keep older %q, found in:\n%s", unwanted, out.Stdout)
 		}
 	}
 }
