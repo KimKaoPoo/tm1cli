@@ -233,14 +233,14 @@ func TestBuildTxFilter(t *testing.T) {
 
 func TestBuildTxQuery(t *testing.T) {
 	t.Run("no params returns bare endpoint", func(t *testing.T) {
-		got := buildTxQuery("", 0, false)
+		got := buildTxQuery("", 0, "")
 		if got != "TransactionLogEntries" {
 			t.Errorf("got %q, want TransactionLogEntries", got)
 		}
 	})
 
 	t.Run("filter + top + orderby desc", func(t *testing.T) {
-		got := buildTxQuery("Cube eq 'Sales'", 50, true)
+		got := buildTxQuery("Cube eq 'Sales'", 50, orderTimeStampDesc)
 		decoded, err := decodedQuery(strings.TrimPrefix(got, "TransactionLogEntries?"))
 		if err != nil {
 			t.Fatalf("cannot decode: %v", err)
@@ -252,15 +252,23 @@ func TestBuildTxQuery(t *testing.T) {
 		}
 	})
 
+	t.Run("orderby asc explicit", func(t *testing.T) {
+		got := buildTxQuery("", 100, orderTimeStampAsc)
+		decoded, _ := decodedQuery(strings.TrimPrefix(got, "TransactionLogEntries?"))
+		if !strings.Contains(decoded, "$orderby=TimeStamp asc") {
+			t.Errorf("query %q should request asc, got %q", got, decoded)
+		}
+	})
+
 	t.Run("top=0 omits $top", func(t *testing.T) {
-		got := buildTxQuery("Cube eq 'X'", 0, true)
+		got := buildTxQuery("Cube eq 'X'", 0, orderTimeStampDesc)
 		if strings.Contains(got, "$top=") {
 			t.Errorf("query %q should not contain $top", got)
 		}
 	})
 
-	t.Run("orderDesc=false omits $orderby", func(t *testing.T) {
-		got := buildTxQuery("Cube eq 'X'", 10, false)
+	t.Run("empty orderBy omits $orderby (server default)", func(t *testing.T) {
+		got := buildTxQuery("Cube eq 'X'", 10, "")
 		if strings.Contains(got, "$orderby") {
 			t.Errorf("query %q should not contain $orderby", got)
 		}
@@ -1926,8 +1934,14 @@ func TestRunLogsTx_FallbackUsesAscOrderForUntilOnlyForensicQuery(t *testing.T) {
 	})
 
 	decoded, _ := decodedQuery(capturedRetryQuery)
+	// Assert the query EXPLICITLY requests ASC — relying on server default
+	// is undefined for TransactionLogEntries (TM1 commonly defaults to DESC,
+	// which would defeat the rescue).
+	if !strings.Contains(decoded, "$orderby=TimeStamp asc") {
+		t.Errorf("retry for --until-only forensic query must explicitly request ASC; got %q", decoded)
+	}
 	if strings.Contains(decoded, "$orderby=TimeStamp desc") {
-		t.Errorf("retry for --until-only forensic query should NOT use DESC ordering (DESC returns the latest rows, all newer than untilTS); got %q", decoded)
+		t.Errorf("retry for --until-only forensic query should not use DESC; got %q", decoded)
 	}
 	if !strings.Contains(out.Stderr, "--until cannot be enforced server-side") {
 		t.Errorf("stderr should warn that --until is unenforceable under fallback, got: %q", out.Stderr)

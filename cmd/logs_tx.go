@@ -140,9 +140,17 @@ func buildTxFilter(sinceTS, untilTS, cube, user string) string {
 	return strings.Join(parts, " and ")
 }
 
+// orderBy values accepted by buildTxQuery. Empty string means no $orderby
+// clause (server default).
+const (
+	orderTimeStampAsc  = "TimeStamp asc"
+	orderTimeStampDesc = "TimeStamp desc"
+)
+
 // buildTxQuery builds the endpoint URL with $filter, $top, $orderby using
-// url.Values for safe encoding.
-func buildTxQuery(filter string, top int, orderDesc bool) string {
+// url.Values for safe encoding. orderBy must be "", orderTimeStampAsc, or
+// orderTimeStampDesc — empty means no $orderby clause (use server default).
+func buildTxQuery(filter string, top int, orderBy string) string {
 	v := url.Values{}
 	if filter != "" {
 		v.Set("$filter", filter)
@@ -150,8 +158,8 @@ func buildTxQuery(filter string, top int, orderDesc bool) string {
 	if top > 0 {
 		v.Set("$top", strconv.Itoa(top))
 	}
-	if orderDesc {
-		v.Set("$orderby", "TimeStamp desc")
+	if orderBy != "" {
+		v.Set("$orderby", orderBy)
 	}
 	if len(v) == 0 {
 		return "TransactionLogEntries"
@@ -178,16 +186,22 @@ func buildTxQuery(filter string, top int, orderDesc bool) string {
 // emitted: --until cannot be enforced server-side without $filter, so
 // historical entries past the retry window will be missed.
 func fetchTxEntries(cl *client.Client, filter string, top int, orderDesc, sinceSet, untilSet bool) ([]model.TransactionLogEntry, bool, error) {
-	endpoint := buildTxQuery(filter, top, orderDesc)
+	successOrderBy := ""
+	if orderDesc {
+		successOrderBy = orderTimeStampDesc
+	}
+	endpoint := buildTxQuery(filter, top, successOrderBy)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
 			retryTop := fallbackRetryTop(top)
-			retryDesc := true
+			// Explicit ASC/DESC — never relying on server default, which is
+			// undefined for TransactionLogEntries and version-dependent.
+			retryOrderBy := orderTimeStampDesc
 			if untilSet && !sinceSet {
-				retryDesc = false
+				retryOrderBy = orderTimeStampAsc
 			}
-			retryData, retryErr := cl.Get(buildTxQuery("", retryTop, retryDesc))
+			retryData, retryErr := cl.Get(buildTxQuery("", retryTop, retryOrderBy))
 			if retryErr != nil {
 				return nil, false, retryErr
 			}
