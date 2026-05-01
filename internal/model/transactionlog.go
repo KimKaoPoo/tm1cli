@@ -9,11 +9,16 @@ import "encoding/json"
 // formatted at render time. Modelling them as string would fail unmarshal
 // for non-string responses.
 //
+// ChangeSetID rides as json.RawMessage too: some TM1 versions emit it as
+// Edm.Int64 (numeric, set by TI processes / bulk ops), others as a string
+// UUID, others as null. Modelling it as string would fail to unmarshal
+// numeric forms and the whole response would bail with a parse error.
+//
 // ID is Edm.Int64; older TM1 versions may omit it (zero == absent).
 type TransactionLogEntry struct {
 	ID            int64           `json:"ID,omitempty"`
 	TimeStamp     string          `json:"TimeStamp"`
-	ChangeSetID   string          `json:"ChangeSetID,omitempty"`
+	ChangeSetID   json.RawMessage `json:"ChangeSetID,omitempty"`
 	User          string          `json:"User"`
 	Cube          string          `json:"Cube"`
 	Tuple         []string        `json:"Tuple"`

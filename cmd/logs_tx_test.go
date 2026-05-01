@@ -551,6 +551,43 @@ func TestTransactionLogEntry_UnmarshalPrimitiveTypes(t *testing.T) {
 	}
 }
 
+// TestTransactionLogEntry_UnmarshalChangeSetIDPolymorphism is a regression
+// guard. TM1 emits ChangeSetID in three observed forms across versions and
+// row sources: numeric Edm.Int64 (TI processes / bulk ops), string UUIDs,
+// and null. Modelling it as `string` would fail unmarshal on the numeric
+// form — the entire response would bail with a generic parse error and
+// the user would lose access to forensic data from any TI-emitted rows.
+func TestTransactionLogEntry_UnmarshalChangeSetIDPolymorphism(t *testing.T) {
+	body := []byte(`{
+		"value": [
+			{"ID":1,"TimeStamp":"2026-04-25T10:00:00Z","User":"u","Cube":"C","Tuple":["x"],"OldValue":0,"NewValue":1,"ChangeSetID":12345},
+			{"ID":2,"TimeStamp":"2026-04-25T10:01:00Z","User":"u","Cube":"C","Tuple":["x"],"OldValue":0,"NewValue":1,"ChangeSetID":"7e8f2a"},
+			{"ID":3,"TimeStamp":"2026-04-25T10:02:00Z","User":"u","Cube":"C","Tuple":["x"],"OldValue":0,"NewValue":1,"ChangeSetID":null},
+			{"ID":4,"TimeStamp":"2026-04-25T10:03:00Z","User":"u","Cube":"C","Tuple":["x"],"OldValue":0,"NewValue":1}
+		]
+	}`)
+
+	var resp model.TransactionLogResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal failed for polymorphic ChangeSetID: %v", err)
+	}
+	if len(resp.Value) != 4 {
+		t.Fatalf("got %d entries, want 4", len(resp.Value))
+	}
+	if got := string(resp.Value[0].ChangeSetID); got != "12345" {
+		t.Errorf("numeric ChangeSetID = %q, want \"12345\"", got)
+	}
+	if got := string(resp.Value[1].ChangeSetID); got != `"7e8f2a"` {
+		t.Errorf("string ChangeSetID = %q, want \"7e8f2a\" (raw JSON)", got)
+	}
+	if got := string(resp.Value[2].ChangeSetID); got != "null" {
+		t.Errorf("null ChangeSetID = %q, want \"null\"", got)
+	}
+	if len(resp.Value[3].ChangeSetID) != 0 {
+		t.Errorf("missing ChangeSetID should unmarshal to zero-length RawMessage, got %q", string(resp.Value[3].ChangeSetID))
+	}
+}
+
 // ============================================================
 // Integration tests — flag validation
 // ============================================================
