@@ -228,6 +228,14 @@ func zeroAllFlags() {
 	logsMsgInterval = 5 * time.Second
 	logsMsgTail = 0
 	logsMsgRaw = false
+	logsTxSince = ""
+	logsTxUntil = ""
+	logsTxCube = ""
+	logsTxUser = ""
+	logsTxFollow = false
+	logsTxInterval = 5 * time.Second
+	logsTxTail = 0
+	logsTxRaw = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -410,6 +418,18 @@ func messageLogJSON(entries ...model.MessageLogEntry) []byte {
 	}{Value: entries}
 	if resp.Value == nil {
 		resp.Value = []model.MessageLogEntry{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// transactionLogJSON returns JSON for a TM1 TransactionLogEntries response.
+func transactionLogJSON(entries ...model.TransactionLogEntry) []byte {
+	resp := struct {
+		Value []model.TransactionLogEntry `json:"value"`
+	}{Value: entries}
+	if resp.Value == nil {
+		resp.Value = []model.TransactionLogEntry{}
 	}
 	data, _ := json.Marshal(resp)
 	return data

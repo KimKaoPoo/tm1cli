@@ -192,19 +192,66 @@ func isFilterRejection(err error) bool {
 // rejects would retry as a bare GET /MessageLogEntries and pull the whole log.
 const fallbackSafetyCap = 1000
 
+// fallbackTailMultiplier widens the fallback retry window when --tail is set
+// alongside a content filter (--level/--user/--contains for messages,
+// --cube/--user for tx). Without the buffer, retrying with raw $top=tail
+// returns the latest N globally and client-filtering can leave near-zero
+// matches even when many matching entries exist just past the window. The
+// retry is capped at fallbackSafetyCap; callers must truncate the post-filter
+// result back to the user-requested --tail.
+const fallbackTailMultiplier = 10
+
+// fallbackRetryTop returns the over-fetch window for a $filter-rejection
+// retry. If --tail was unset (top=0), use the safety cap. If --tail was set,
+// over-fetch by fallbackTailMultiplier capped at the safety cap. The
+// short-circuit when `top >= fallbackSafetyCap/fallbackTailMultiplier` also
+// guards against int overflow on extreme --tail values.
+func fallbackRetryTop(top int) int {
+	if top == 0 || top >= fallbackSafetyCap/fallbackTailMultiplier {
+		return fallbackSafetyCap
+	}
+	return top * fallbackTailMultiplier
+}
+
+// warnIfPaginated emits a one-shot warning when the server response carries
+// an OData @odata.nextLink. The fetch path does not follow continuations,
+// so without this warning the result set would silently truncate at the
+// first server page — a particular hazard for long --since/--until windows.
+func warnIfPaginated(nextLink string) {
+	if nextLink == "" {
+		return
+	}
+	output.PrintWarning("Server returned a paginated response; results may be truncated. Narrow --since/--until or set --tail to widen the visible window.")
+}
+
+// emitFallbackWarning prints the disclosure shown when the server rejects
+// $filter and the client retries unfiltered. retryTop is the over-fetch
+// window (always disclosed so users know the local filter is bounded);
+// gotRows is the row count the retry returned. When gotRows >= retryTop
+// the cap was hit, so an additional warning flags likely truncation.
+func emitFallbackWarning(retryTop, gotRows int) {
+	output.PrintWarning(fmt.Sprintf(
+		"Server-side filter not supported; filtering locally over the most recent %d entries — results may be incomplete",
+		retryTop,
+	))
+	if gotRows >= retryTop {
+		output.PrintWarning(fmt.Sprintf(
+			"Hit fallback cap of %d entries; narrow --since/--until or increase --tail to widen the window",
+			retryTop,
+		))
+	}
+}
+
 // fetchMessageLogEntries performs GET. On HTTP 400/501 with a filter-rejection body,
-// it retries without $filter (capping $top at fallbackSafetyCap when no --tail was
-// given) and returns fallback=true. On auth (401/403), not-found (404), or network
-// errors the error propagates unchanged.
+// it retries without $filter (over-fetching via fallbackRetryTop when --tail is
+// set so client-side filtering has room to find matches) and returns fallback=true.
+// On auth (401/403), not-found (404), or network errors the error propagates unchanged.
 func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc bool) ([]model.MessageLogEntry, bool, error) {
 	endpoint := buildMessageLogQuery(filter, top, orderDesc)
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		if filter != "" && isFilterRejection(err) {
-			retryTop := top
-			if retryTop == 0 {
-				retryTop = fallbackSafetyCap
-			}
+			retryTop := fallbackRetryTop(top)
 			// Always order DESC on retry so the cap retains the most recent
 			// entries — otherwise a --since query could return the oldest 1000
 			// entries (since epoch) instead of the 1000 newest in the window.
@@ -217,7 +264,7 @@ func fetchMessageLogEntries(cl *client.Client, filter string, top int, orderDesc
 			if jsonErr := json.Unmarshal(retryData, &resp); jsonErr != nil {
 				return nil, false, fmt.Errorf("cannot parse server response: %w", jsonErr)
 			}
-			output.PrintWarning("Server-side filter not supported, filtering locally...")
+			emitFallbackWarning(retryTop, len(resp.Value))
 			return resp.Value, true, nil
 		}
 		return nil, false, err
@@ -329,11 +376,19 @@ func boundaryIDs(entries []model.MessageLogEntry) (string, map[string]struct{}) 
 	return maxTS, ids
 }
 
-// defaultTailIfUnbounded returns 100 when no time-bound flag is set to avoid
-// unbounded reads against multi-GB message logs. Applies in --follow too:
-// kubectl-style, show the last N entries first then stream new ones.
-func defaultTailIfUnbounded(since string, tail int) int {
-	if since == "" && tail == 0 {
+// defaultTailIfUnbounded returns 100 when neither a time bound nor an
+// explicit --tail is set, to avoid unbounded reads against multi-GB logs.
+// Applies in --follow too: kubectl-style, show the last N entries first
+// then stream new ones.
+//
+// `bounded` is true when ANY time-bound flag is set by the caller — for
+// `logs messages` that's just --since, for `logs tx` it's --since OR
+// --until. Treating --until as a bound prevents silent truncation of
+// queries like `tm1cli logs tx --until 2026-04-24T18:00:00Z` where the
+// user has explicitly bounded the upper end and expects all matching
+// entries.
+func defaultTailIfUnbounded(bounded bool, tail int) int {
+	if !bounded && tail == 0 {
 		return 100
 	}
 	return tail
@@ -501,7 +556,7 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	tail := defaultTailIfUnbounded(logsMsgSince, logsMsgTail)
+	tail := defaultTailIfUnbounded(logsMsgSince != "", logsMsgTail)
 
 	cl, err := createClient(cfg)
 	if err != nil {
@@ -522,6 +577,13 @@ func runLogsMessages(cmd *cobra.Command, args []string) error {
 	}
 	if applySince != "" || applyLevel != "" || logsMsgUser != "" || logsMsgContains != "" {
 		entries = applyClientFilters(entries, applySince, applyLevel, logsMsgUser, logsMsgContains)
+	}
+
+	// Fallback over-fetches via fallbackTailMultiplier so client-side filtering
+	// has room to find matches; trim back to the user-requested --tail before
+	// display. Server-returned entries are DESC, so [:tail] keeps the newest.
+	if fallback && tail > 0 && len(entries) > tail {
+		entries = entries[:tail]
 	}
 
 	if tail > 0 {

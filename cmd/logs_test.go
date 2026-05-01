@@ -671,20 +671,20 @@ func TestIsFilterRejection(t *testing.T) {
 
 func TestDefaultTailIfUnbounded(t *testing.T) {
 	tests := []struct {
-		name  string
-		since string
-		tail  int
-		want  int
+		name    string
+		bounded bool
+		tail    int
+		want    int
 	}{
-		{"no flags defaults to 100", "", 0, 100},
-		{"explicit tail preserved", "", 50, 50},
-		{"since set, tail stays 0", "2026-04-25T10:00:00Z", 0, 0},
-		{"both set", "2026-04-25T10:00:00Z", 50, 50},
+		{"no bound, no tail defaults to 100", false, 0, 100},
+		{"no bound, explicit tail preserved", false, 50, 50},
+		{"bounded by time, tail stays 0", true, 0, 0},
+		{"bounded by time + tail set", true, 50, 50},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := defaultTailIfUnbounded(tt.since, tt.tail); got != tt.want {
-				t.Errorf("defaultTailIfUnbounded(%q, %d) = %d, want %d", tt.since, tt.tail, got, tt.want)
+			if got := defaultTailIfUnbounded(tt.bounded, tt.tail); got != tt.want {
+				t.Errorf("defaultTailIfUnbounded(%v, %d) = %d, want %d", tt.bounded, tt.tail, got, tt.want)
 			}
 		})
 	}
@@ -1298,14 +1298,80 @@ func TestRunLogsMessages_FilterFallback(t *testing.T) {
 	if strings.Contains(out.Stdout, "info msg") {
 		t.Errorf("stdout should NOT contain 'info msg' (client-filtered), got:\n%s", out.Stdout)
 	}
-	// Fallback retry preserves the user's --tail and orders desc so the cap
-	// retains the most recent entries.
+	// Fallback retry buffers the user's --tail (default 100) by
+	// fallbackTailMultiplier so client-side filtering has room to find
+	// matches. 100 * 10 = 1000 == fallbackSafetyCap.
 	decodedSecond, _ := decodedQuery(secondQuery)
-	if !strings.Contains(decodedSecond, "$top=100") {
-		t.Errorf("fallback query %q should preserve $top=100 from --tail default", decodedSecond)
+	wantBuffered := 100 * fallbackTailMultiplier
+	if wantBuffered > fallbackSafetyCap {
+		wantBuffered = fallbackSafetyCap
+	}
+	if !strings.Contains(decodedSecond, fmt.Sprintf("$top=%d", wantBuffered)) {
+		t.Errorf("fallback query %q should buffer to $top=%d (=tail*multiplier capped)", decodedSecond, wantBuffered)
 	}
 	if !strings.Contains(decodedSecond, "$orderby=TimeStamp desc") {
 		t.Errorf("fallback query %q should order by TimeStamp desc to retain newest entries", decodedSecond)
+	}
+}
+
+// TestRunLogsMessages_FilterFallbackBuffersTailForLevelFilter mirrors the
+// fix for the parity issue called out in tm1cli-issue-79's review: --tail
+// combined with a content filter (--level here) on a server without $filter
+// support must over-fetch so client-side filtering can find tail-many
+// matches, then truncate back to the user's --tail.
+func TestRunLogsMessages_FilterFallbackBuffersTailForLevelFilter(t *testing.T) {
+	resetCmdFlags(t)
+	logsMsgTail = 3
+	logsMsgLevel = "error"
+
+	const wantBuffered = 3 * fallbackTailMultiplier // 30
+
+	var capturedRetryQuery string
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		query := r.URL.RawQuery
+		if strings.Contains(query, "%24filter") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("$filter not supported"))
+			return
+		}
+		capturedRetryQuery = query
+		w.Header().Set("Content-Type", "application/json")
+		// Sparse error matches: 30 entries, only 5 are Error.
+		entries := make([]model.MessageLogEntry, 0, 30)
+		for i := 0; i < 30; i++ {
+			level := "Info"
+			if i < 5 {
+				level = "Error"
+			}
+			entries = append(entries, model.MessageLogEntry{
+				ID:        fmt.Sprintf("%d", i+1),
+				TimeStamp: time.Date(2026, 4, 25, 10, 0, i, 0, time.UTC).Format(time.RFC3339),
+				Level:     level,
+				Message:   fmt.Sprintf("msg-%d", i+1),
+			})
+		}
+		w.Write(messageLogJSON(entries...))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsMessages(logsMessagesCmd, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	decoded, _ := decodedQuery(capturedRetryQuery)
+	if !strings.Contains(decoded, fmt.Sprintf("$top=%d", wantBuffered)) {
+		t.Errorf("retry query %q should buffer $top to %d (=tail*multiplier)", decoded, wantBuffered)
+	}
+	// 5 Error matches truncated to --tail=3 in DESC order.
+	errorCount := strings.Count(out.Stdout, "Error")
+	if errorCount != 3 {
+		t.Errorf("expected exactly 3 Error rows after truncation, got %d:\n%s", errorCount, out.Stdout)
+	}
+	if strings.Count(out.Stdout, "Info") != 0 {
+		t.Errorf("Info rows should be filtered out, got:\n%s", out.Stdout)
 	}
 }
 
