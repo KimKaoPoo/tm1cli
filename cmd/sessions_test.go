@@ -409,15 +409,13 @@ func TestSessionsList_ThreadsExpandFallback(t *testing.T) {
 
 // --- Integration: sessions close ---
 
-// sessionsCloseHandler builds an http handler that routes the three endpoints
-// the close command may hit. Pass options to control behavior per test.
+// closeHandlerOpts controls the per-test behavior of newCloseHandler.
 type closeHandlerOpts struct {
-	activeSessionID     int64    // ID returned by GET /ActiveSession; 0 means "no active session"
-	activeSessionStatus int      // override status code for /ActiveSession (0 = use 200)
-	closeStatus         int      // status returned by POST /Sessions(...)/tm1.Close (default 200)
-	postsCaptured       *int     // counter incremented on each POST
+	activeSessionID     int64 // ID returned by GET /ActiveSession; 0 means "no active session"
+	activeSessionStatus int   // override status code for /ActiveSession (0 = use 200)
+	closeStatus         int   // status returned by POST /Sessions(...)/tm1.Close (default 200)
+	postsCaptured       *int  // counter incremented on each POST
 	postPathsCaptured   *[]string
-	listSessions        []model.Session
 }
 
 func newCloseHandler(opts closeHandlerOpts) http.HandlerFunc {
@@ -431,9 +429,6 @@ func newCloseHandler(opts closeHandlerOpts) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(activeSessionJSON(opts.activeSessionID))
-		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/Sessions"):
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(sessionsJSON(opts.listSessions...))
 		case r.Method == "POST" && strings.Contains(r.URL.Path, "tm1.Close"):
 			if opts.postsCaptured != nil {
 				*opts.postsCaptured++
