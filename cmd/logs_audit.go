@@ -430,11 +430,17 @@ func followAuditLogs(ctx context.Context, cl *client.Client, watermarkTS string,
 		}
 
 		if seenMaxTS != "" {
-			// The watermark must be MONOTONIC — never regress.
+			// The watermark must be MONOTONIC — never regress. Under fallback,
+			// the server returns the unfiltered log; dedupe can strip the
+			// latest rows leaving older entries whose seenMaxTS is BEFORE
+			// watermarkTS. Accepting that would forget the prior boundary IDs
+			// and re-emit the original entries on the next poll, indefinitely.
 			seenT, seenErr := parseTimeStamp(seenMaxTS)
 			curT, curErr := parseTimeStamp(watermarkTS)
 			if seenMaxTS == watermarkTS {
 				// Same boundary: MERGE new IDs into the existing dedup set.
+				// Replacing would drop prior boundary IDs and re-emit them
+				// next poll if the server keeps returning them at this TS.
 				for k, v := range seenIDs {
 					watermarkIDs[k] = v
 				}
