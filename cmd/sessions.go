@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -311,7 +310,9 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	endpoint := fmt.Sprintf("Sessions('%s')/tm1.Close", url.PathEscape(id))
+	// Unquoted numeric key per OData URL conventions; id was validated as
+	// digits-only above, so it is safe to interpolate without escaping.
+	endpoint := fmt.Sprintf("Sessions(%s)/tm1.Close", id)
 	if _, err := cl.Post(endpoint, map[string]interface{}{}); err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			output.PrintError(fmt.Sprintf("Session '%s' not found.", id), jsonMode)

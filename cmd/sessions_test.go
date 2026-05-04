@@ -504,8 +504,8 @@ func TestSessionsClose_Success(t *testing.T) {
 	if !strings.Contains(cap.Stdout, "Closed session '123'") {
 		t.Errorf("expected success message in stdout, got: %s", cap.Stdout)
 	}
-	if len(paths) != 1 || !strings.Contains(paths[0], "Sessions('123')/tm1.Close") {
-		t.Errorf("expected POST to Sessions('123')/tm1.Close, got: %v", paths)
+	if len(paths) != 1 || !strings.Contains(paths[0], "Sessions(123)/tm1.Close") {
+		t.Errorf("expected POST to Sessions(123)/tm1.Close, got: %v", paths)
 	}
 }
 
