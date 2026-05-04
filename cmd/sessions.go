@@ -29,6 +29,10 @@ var (
 const (
 	sessionsListBase     = "Sessions?$select=ID,Context,Active,LastActivity&$expand=User($select=Name)"
 	sessionsThreadsParam = ",Threads($select=ID)"
+	// Over-fetch buffer above --limit so the client can detect that the
+	// server actually had more rows and emit "Showing 50 of N" instead of
+	// silently capping at exactly --limit.
+	sessionsTruncationProbe = 100
 )
 
 var sessionsCmd = &cobra.Command{
@@ -120,24 +124,21 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 }
 
 // fetchSessions issues GET /Sessions with the full $expand. If the server
-// rejects $expand=Threads (HTTP 400/501), it retries without that clause
-// and returns threadsAvailable=false plus a warning.
+// rejects $expand=Threads (HTTP 400/501 with an expand-related body), it
+// retries without that clause and returns threadsAvailable=false. On any
+// other error, the original error is surfaced.
 func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Session, bool, error) {
-	endpoint := sessionsListBase + sessionsThreadsParam
+	topClause := ""
 	if limit > 0 && !activeFilters {
-		endpoint += fmt.Sprintf("&$top=%d", limit+100)
+		topClause = fmt.Sprintf("&$top=%d", limit+sessionsTruncationProbe)
 	}
 
-	data, err := cl.Get(endpoint)
+	data, err := cl.Get(sessionsListBase + sessionsThreadsParam + topClause)
 	if err != nil {
 		if !isExpandRejection(err) {
 			return nil, false, err
 		}
-		retryEndpoint := sessionsListBase
-		if limit > 0 && !activeFilters {
-			retryEndpoint += fmt.Sprintf("&$top=%d", limit+100)
-		}
-		retryData, retryErr := cl.Get(retryEndpoint)
+		retryData, retryErr := cl.Get(sessionsListBase + topClause)
 		if retryErr != nil {
 			return nil, false, err
 		}
@@ -156,68 +157,59 @@ func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Se
 	return resp.Value, true, nil
 }
 
-// isExpandRejection reports whether err looks like a server-side rejection
-// of an $expand clause: HTTP 400 or 501 that is not an auth or not-found
-// error. Used to gate the Threads-expand fallback retry.
+// isExpandRejection reports whether err is a 400/501 OData rejection that
+// looks like an $expand-related complaint. Auth errors (401/403/auth-fail)
+// and not-found are excluded; the keyword guard avoids retrying on
+// unrelated 400s such as bad $select syntax.
 func isExpandRejection(err error) bool {
 	if err == nil || errors.Is(err, client.ErrNotFound) {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "Authentication failed") {
+	if strings.Contains(msg, "Authentication failed") || strings.HasPrefix(msg, "HTTP 403") {
 		return false
 	}
-	if strings.HasPrefix(msg, "HTTP 403") {
+	if !strings.HasPrefix(msg, "HTTP 400") && !strings.HasPrefix(msg, "HTTP 501") {
 		return false
 	}
-	return strings.HasPrefix(msg, "HTTP 400") || strings.HasPrefix(msg, "HTTP 501")
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "expand") ||
+		strings.Contains(lower, "thread") ||
+		strings.Contains(lower, "navigation") ||
+		strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "not implemented")
 }
 
 func filterSessions(sessions []model.Session, user string, inactiveFor time.Duration, now time.Time) []model.Session {
 	if user == "" && inactiveFor == 0 {
 		return sessions
 	}
+	userLower := strings.ToLower(user)
 	var out []model.Session
 	for _, s := range sessions {
-		if user != "" && !strings.Contains(strings.ToLower(s.User.Name), strings.ToLower(user)) {
+		if user != "" && !strings.Contains(strings.ToLower(s.User.Name), userLower) {
 			continue
 		}
 		if inactiveFor > 0 {
-			t, ok := parseSessionTime(s.LastActivity)
-			if ok && now.Sub(t) < inactiveFor {
+			if t, err := parseTimeStamp(s.LastActivity); err == nil && now.Sub(t) < inactiveFor {
 				continue
 			}
+			// parse failure → keep entry (unknown age, never silently dropped)
 		}
 		out = append(out, s)
 	}
 	return out
 }
 
-// parseSessionTime accepts RFC3339 with or without fractional seconds. It
-// returns ok=false on empty or unparseable input so callers can keep the
-// entry as "unknown age" instead of silently dropping it.
-func parseSessionTime(s string) (time.Time, bool) {
-	if s == "" {
-		return time.Time{}, false
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
-}
-
-// formatLastActivity renders LastActivity relative to now: "5m ago" /
-// "2h ago" / "3d ago" or absolute UTC for ages over a week. Empty input
-// returns "" and unparseable input is echoed verbatim.
+// formatLastActivity renders LastActivity relative to now. Empty input
+// returns "" and unparseable input is echoed verbatim so the user can
+// still see what the server sent.
 func formatLastActivity(s string, now time.Time) string {
 	if s == "" {
 		return ""
 	}
-	t, ok := parseSessionTime(s)
-	if !ok {
+	t, err := parseTimeStamp(s)
+	if err != nil {
 		return s
 	}
 	d := now.Sub(t)
@@ -280,7 +272,7 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 
 	jsonMode := isJSONOutput(cfg)
 
-	if !isAllDigits(id) {
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
 		output.PrintError(fmt.Sprintf("Invalid session ID %q (must be numeric).", id), jsonMode)
 		return errSilent
 	}
@@ -291,15 +283,19 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	isSelfClose, selfErr := detectSelfClose(cl, id)
-	if selfErr != nil && flagVerbose {
-		fmt.Fprintf(os.Stderr, "[verbose] could not look up active session: %s\n", selfErr)
-	}
-
-	if isSelfClose && !sessionsCloseYes {
-		fmt.Fprintf(os.Stderr, "Warning: '%s' is your active session. Closing it will log you out.\n", id)
-		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
-			return nil
+	if !sessionsCloseYes {
+		isSelfClose, selfErr := detectSelfClose(cl, id)
+		if selfErr != nil {
+			output.PrintWarning("could not verify whether this is your active session — proceeding")
+			if flagVerbose {
+				fmt.Fprintf(os.Stderr, "[verbose] ActiveSession lookup error: %s\n", selfErr)
+			}
+		}
+		if isSelfClose {
+			fmt.Fprintf(os.Stderr, "Warning: '%s' is your active session. Closing it will log you out.\n", id)
+			if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
+				return nil
+			}
 		}
 	}
 
@@ -343,19 +339,6 @@ func detectSelfClose(cl *client.Client, target string) (bool, error) {
 		return false, fmt.Errorf("cannot parse ActiveSession response")
 	}
 	return strconv.FormatInt(ref.ID, 10) == target, nil
-}
-
-// isAllDigits reports whether s consists only of ASCII digits and is non-empty.
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func init() {

@@ -97,27 +97,6 @@ func TestFormatLastActivity(t *testing.T) {
 	}
 }
 
-func TestIsAllDigits(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"123", true},
-		{"0", true},
-		{"", false},
-		{"abc", false},
-		{"12a", false},
-		{"-1", false},
-		{"1.5", false},
-	}
-	for _, tt := range tests {
-		got := isAllDigits(tt.input)
-		if got != tt.want {
-			t.Errorf("isAllDigits(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestIsExpandRejection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -125,8 +104,9 @@ func TestIsExpandRejection(t *testing.T) {
 		want bool
 	}{
 		{"nil error", nil, false},
-		{"http 400", fmt.Errorf("HTTP 400: bad request"), true},
-		{"http 501", fmt.Errorf("HTTP 501: not implemented"), true},
+		{"http 400 mentioning expand", fmt.Errorf("HTTP 400: $expand=Threads not supported"), true},
+		{"http 501 not implemented", fmt.Errorf("HTTP 501: not implemented"), true},
+		{"http 400 unrelated bad-request", fmt.Errorf("HTTP 400: invalid query"), false},
 		{"http 403 forbidden", fmt.Errorf("HTTP 403: forbidden"), false},
 		{"http 500 server error", fmt.Errorf("HTTP 500: oops"), false},
 		{"auth failure", fmt.Errorf("Authentication failed. Check credentials."), false},
@@ -687,7 +667,37 @@ func TestSessionsClose_ActiveSessionLookupFails(t *testing.T) {
 	if posts != 1 {
 		t.Errorf("expected POST to proceed despite ActiveSession lookup failure, got %d POSTs", posts)
 	}
-	if !strings.Contains(cap.Stderr, "could not look up active session") {
+	if !strings.Contains(cap.Stderr, "could not verify whether this is your active session") {
+		t.Errorf("expected user-visible warning on stderr, got: %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stderr, "[verbose] ActiveSession lookup error") {
 		t.Errorf("expected verbose diagnostic on stderr, got: %s", cap.Stderr)
+	}
+}
+
+func TestSessionsClose_YesSkipsActiveSessionLookup(t *testing.T) {
+	resetCmdFlags(t)
+	getCalls := 0
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			getCalls++
+		}
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "tm1.Close") {
+			w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "close", "42", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if getCalls != 0 {
+		t.Errorf("expected no GET when --yes is set, got %d", getCalls)
+	}
+	if !strings.Contains(cap.Stdout, "Closed session '42'") {
+		t.Errorf("expected close success, got: %s", cap.Stdout)
 	}
 }
