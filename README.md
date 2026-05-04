@@ -212,7 +212,7 @@ tm1cli logs messages --follow --output json   # NDJSON stream (one object per li
 ```
 
 ```bash
-# Audit log (requires AuditLog=T in tm1s.cfg; see below)
+# Audit log (requires AuditLogOn=T in tm1s.cfg; see below)
 tm1cli logs audit                                            # show last 100 audit log entries
 tm1cli logs audit --tail 50                                  # show last 50 entries
 tm1cli logs audit --since 24h --object-type Cube             # cube events in the past 24 hours
@@ -223,7 +223,7 @@ tm1cli logs audit --output json                              # JSON array output
 tm1cli logs audit --follow --output json                     # NDJSON stream (one object per line)
 ```
 
-**Prerequisite:** The TM1 server must have audit logging enabled (`AuditLog=T` in `tm1s.cfg`).
+**Prerequisite:** The TM1 server must have audit logging enabled (`AuditLogOn=T` in `tm1s.cfg`).
 When audit logging is disabled, the command exits with a clear error explaining how to enable it.
 
 **Note:** An empty result set may also indicate insufficient permission to read the audit log on

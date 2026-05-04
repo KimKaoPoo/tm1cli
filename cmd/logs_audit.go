@@ -38,7 +38,7 @@ var logsAuditCmd = &cobra.Command{
 
 REST API: GET /AuditLogEntries
 
-Prerequisite: the server must have audit logging enabled (AuditLog=T in
+Prerequisite: the server must have audit logging enabled (AuditLogOn=T in
 tm1s.cfg). When disabled, this command exits with a clear error.
 
 Filter by time range, object type, object name, or user. Use --follow to
@@ -61,7 +61,7 @@ the audit log on this server.`,
 	RunE: runLogsAudit,
 }
 
-var errAuditLogDisabled = errors.New("Audit log is disabled on this TM1 server. Set AuditLog=T in tm1s.cfg and restart the server.")
+var errAuditLogDisabled = errors.New("Audit log is disabled on this TM1 server. Set AuditLogOn=T in tm1s.cfg and restart the server.")
 
 // isAuditLogDisabled returns true when the server error indicates audit
 // logging is not enabled. The signal varies by TM1 version, so accept
@@ -404,6 +404,11 @@ func followAuditLogs(ctx context.Context, cl *client.Client, watermarkTS string,
 		// sinceSet is true because the watermark itself is a since-anchor.
 		entries, fallback, err := fetchAuditEntries(cl, filter, 0, false, true, false)
 		if err != nil {
+			// Audit logging toggled off mid-stream: bail out instead of
+			// spamming "poll failed" warnings forever.
+			if errors.Is(err, errAuditLogDisabled) {
+				return err
+			}
 			output.PrintWarning(fmt.Sprintf("poll failed: %s", err))
 			continue
 		}

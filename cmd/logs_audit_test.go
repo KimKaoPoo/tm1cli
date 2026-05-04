@@ -883,7 +883,7 @@ func TestRunLogsAudit_FilterFallbackOnHTTP400(t *testing.T) {
 // Regression for #80 review feedback: a filter-rejection body that echoes
 // the entity-set name "AuditLogEntries" must NOT be misclassified as a
 // disabled-audit error. The client must fall back to client-side filtering
-// (request count == 2, fallback warning emitted, no AuditLog=T error).
+// (request count == 2, fallback warning emitted, no AuditLogOn=T error).
 func TestRunLogsAudit_FilterRejectionMentioningEntityNameStillFallsBack(t *testing.T) {
 	resetCmdFlags(t)
 	logsAuditObjectType = "Cube"
@@ -914,7 +914,7 @@ func TestRunLogsAudit_FilterRejectionMentioningEntityNameStillFallsBack(t *testi
 	if !strings.Contains(out.Stderr, "[warn] Server-side filter not supported") {
 		t.Errorf("stderr should print fallback warning, got: %q", out.Stderr)
 	}
-	if strings.Contains(out.Stderr, "AuditLog=T") {
+	if strings.Contains(out.Stderr, "AuditLogOn=T") {
 		t.Errorf("filter-rejection body must NOT trigger the disabled-audit error, got: %q", out.Stderr)
 	}
 	if !strings.Contains(out.Stdout, "Cube") {
@@ -1041,8 +1041,8 @@ func TestRunLogsAudit_AuditLogDisabledFriendlyError(t *testing.T) {
 	if got := atomic.LoadInt32(&requestCount); got != 1 {
 		t.Errorf("expected 1 HTTP request (no retry), got %d", got)
 	}
-	if !strings.Contains(out.Stderr, "AuditLog=T") {
-		t.Errorf("stderr should mention AuditLog=T, got: %q", out.Stderr)
+	if !strings.Contains(out.Stderr, "AuditLogOn=T") {
+		t.Errorf("stderr should mention AuditLogOn=T, got: %q", out.Stderr)
 	}
 }
 
@@ -1074,8 +1074,8 @@ func TestRunLogsAudit_AuditLogDisabledOnFallbackRetry(t *testing.T) {
 	if got := atomic.LoadInt32(&requestCount); got != 2 {
 		t.Errorf("expected 2 HTTP requests (first filter rejection, second disabled), got %d", got)
 	}
-	if !strings.Contains(out.Stderr, "AuditLog=T") {
-		t.Errorf("stderr should contain friendly AuditLog=T message, got: %q", out.Stderr)
+	if !strings.Contains(out.Stderr, "AuditLogOn=T") {
+		t.Errorf("stderr should contain friendly AuditLogOn=T message, got: %q", out.Stderr)
 	}
 }
 
@@ -1095,8 +1095,8 @@ func TestRunLogsAudit_AuthErrorNotTreatedAsDisabled(t *testing.T) {
 		}
 	})
 
-	if strings.Contains(out.Stderr, "AuditLog=T") {
-		t.Errorf("auth error should NOT be treated as disabled, but got AuditLog=T in: %q", out.Stderr)
+	if strings.Contains(out.Stderr, "AuditLogOn=T") {
+		t.Errorf("auth error should NOT be treated as disabled, but got AuditLogOn=T in: %q", out.Stderr)
 	}
 	if !strings.Contains(out.Stderr, "Authentication failed") {
 		t.Errorf("stderr should mention auth failure, got: %q", out.Stderr)
@@ -1118,8 +1118,8 @@ func TestRunLogsAudit_NotFoundNotTreatedAsDisabled(t *testing.T) {
 		}
 	})
 
-	if strings.Contains(out.Stderr, "AuditLog=T") {
-		t.Errorf("404 should NOT be treated as disabled, but got AuditLog=T in: %q", out.Stderr)
+	if strings.Contains(out.Stderr, "AuditLogOn=T") {
+		t.Errorf("404 should NOT be treated as disabled, but got AuditLogOn=T in: %q", out.Stderr)
 	}
 }
 
