@@ -66,8 +66,13 @@ var errAuditLogDisabled = errors.New("Audit log is disabled on this TM1 server. 
 // isAuditLogDisabled returns true when the server error indicates audit
 // logging is not enabled. The signal varies by TM1 version, so accept
 // any of "disabled" / "not enabled" / "not supported" / "not available"
-// in combination with "audit". Auth and not-found errors are excluded:
-// they imply nothing about audit-log config.
+// in combination with the feature phrase ("audit log" or "auditing").
+// The bare token "audit" is rejected because it appears inside the
+// entity-set name AuditLogEntries — server bodies that echo the entity
+// name in a $filter-rejection (e.g. "$filter is not supported for
+// AuditLogEntries") would otherwise be misclassified as disabled and
+// suppress the required client-side fallback. Auth and not-found errors
+// are also excluded: they imply nothing about audit-log config.
 func isAuditLogDisabled(err error) bool {
 	if err == nil {
 		return false
@@ -80,7 +85,10 @@ func isAuditLogDisabled(err error) bool {
 		return false
 	}
 	lower := strings.ToLower(msg)
-	if !strings.Contains(lower, "audit") {
+	// Require the feature phrase to avoid matching "AuditLogEntries"
+	// (entity-set name) which lowercases to "auditlogentries" — neither
+	// "audit log" (note the space) nor "auditing" appears in it.
+	if !strings.Contains(lower, "audit log") && !strings.Contains(lower, "auditing") {
 		return false
 	}
 	return strings.Contains(lower, "disabled") ||

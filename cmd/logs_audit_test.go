@@ -401,6 +401,14 @@ func TestIsAuditLogDisabled(t *testing.T) {
 		{"HTTP 404 not found", fmt.Errorf("HTTP 404: Not found"), false},
 		{"HTTP 400 filter not supported (no audit keyword)", fmt.Errorf("HTTP 400: filter not supported"), false},
 		{"connection timeout (no audit keyword)", fmt.Errorf("Connection error: timeout"), false},
+		// Regression: the entity-set name "AuditLogEntries" lowercases to
+		// "auditlogentries" and contains the substring "audit". A naive
+		// keyword check that accepted the bare token "audit" would
+		// misclassify these benign filter-rejection bodies as disabled
+		// and suppress the required client-side fallback. Both must
+		// return false.
+		{"filter rejection body mentions entity-set name", fmt.Errorf("HTTP 400: $filter is not supported for AuditLogEntries"), false},
+		{"orderby rejection body mentions entity-set name", fmt.Errorf("HTTP 501: AuditLogEntries: $orderby not supported"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -869,6 +877,48 @@ func TestRunLogsAudit_FilterFallbackOnHTTP400(t *testing.T) {
 	}
 	if strings.Contains(out.Stdout, "Process") {
 		t.Errorf("stdout should NOT contain Process after client-filter, got:\n%s", out.Stdout)
+	}
+}
+
+// Regression for #80 review feedback: a filter-rejection body that echoes
+// the entity-set name "AuditLogEntries" must NOT be misclassified as a
+// disabled-audit error. The client must fall back to client-side filtering
+// (request count == 2, fallback warning emitted, no AuditLog=T error).
+func TestRunLogsAudit_FilterRejectionMentioningEntityNameStillFallsBack(t *testing.T) {
+	resetCmdFlags(t)
+	logsAuditObjectType = "Cube"
+
+	var requestCount int32
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"$filter is not supported for AuditLogEntries"}`)
+			return
+		}
+		w.Write(auditLogJSON(
+			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+		))
+	})
+
+	out := captureAll(t, func() {
+		if err := runLogsAudit(logsAuditCmd, nil); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+
+	if got := atomic.LoadInt32(&requestCount); got != 2 {
+		t.Errorf("expected exactly 2 requests (initial + fallback), got %d", got)
+	}
+	if !strings.Contains(out.Stderr, "[warn] Server-side filter not supported") {
+		t.Errorf("stderr should print fallback warning, got: %q", out.Stderr)
+	}
+	if strings.Contains(out.Stderr, "AuditLog=T") {
+		t.Errorf("filter-rejection body must NOT trigger the disabled-audit error, got: %q", out.Stderr)
+	}
+	if !strings.Contains(out.Stdout, "Cube") {
+		t.Errorf("stdout should contain the Cube row, got:\n%s", out.Stdout)
 	}
 }
 
