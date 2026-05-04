@@ -363,6 +363,37 @@ func TestSessionsList_VerboseShowsEndpoint(t *testing.T) {
 	}
 }
 
+func TestSessionsList_ThreadsExpandFallbackRetryFails(t *testing.T) {
+	resetCmdFlags(t)
+	calls := 0
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"$expand=Threads not supported"}`))
+			return
+		}
+		// Retry fails with a different, actionable error (e.g. auth lost mid-call).
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"upstream went away"}`))
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "HTTP 500") {
+		t.Errorf("expected retry-error (HTTP 500) on stderr, got: %s", cap.Stderr)
+	}
+	if strings.Contains(cap.Stderr, "Threads column unavailable") {
+		t.Errorf("fallback warning should not fire when retry itself fails, got: %s", cap.Stderr)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 GET attempts (initial + retry), got %d", calls)
+	}
+}
+
 func TestSessionsList_ThreadsExpandFallback(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := []model.Session{makeSession(1, "Admin", 1, 0)}

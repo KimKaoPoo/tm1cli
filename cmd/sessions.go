@@ -140,7 +140,10 @@ func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Se
 		}
 		retryData, retryErr := cl.Get(sessionsListBase + topClause)
 		if retryErr != nil {
-			return nil, false, err
+			// Surface the retry error so the user sees the actual failure
+			// (auth lost, network drop, etc.) instead of the misleading
+			// expand-rejection from the first attempt.
+			return nil, false, retryErr
 		}
 		output.PrintWarning("server rejected $expand=Threads — Threads column unavailable")
 		var resp model.SessionResponse
