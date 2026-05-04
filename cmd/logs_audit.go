@@ -85,6 +85,13 @@ func isAuditLogDisabled(err error) bool {
 		return false
 	}
 	lower := strings.ToLower(msg)
+	// Filter / orderby rejection bodies often phrase the issue with the
+	// feature name spelled out ("$filter is not supported for the audit
+	// log"). Those must fall through to isFilterRejection so the client
+	// retries unfiltered — never short-circuit them as disabled.
+	if strings.Contains(lower, "filter") || strings.Contains(lower, "orderby") {
+		return false
+	}
 	// Require the feature phrase to avoid matching "AuditLogEntries"
 	// (entity-set name) which lowercases to "auditlogentries" — neither
 	// "audit log" (note the space) nor "auditing" appears in it.
