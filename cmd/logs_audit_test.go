@@ -33,14 +33,14 @@ func TestBuildAuditFilter(t *testing.T) {
 			"TimeStamp ge 2026-04-25T10:00:00Z and TimeStamp le 2026-04-25T18:00:00Z"},
 		{"object-type only", "", "", "Cube", "", "", "ObjectType eq 'Cube'"},
 		{"object-name only", "", "", "", "Sales", "", "ObjectName eq 'Sales'"},
-		{"user only", "", "", "", "", "admin", "User eq 'admin'"},
+		{"user only", "", "", "", "", "admin", "UserName eq 'admin'"},
 		{"object-type and object-name", "", "", "Cube", "Sales", "", "ObjectType eq 'Cube' and ObjectName eq 'Sales'"},
-		{"object-name and user", "", "", "", "ImportSales", "admin", "ObjectName eq 'ImportSales' and User eq 'admin'"},
+		{"object-name and user", "", "", "", "ImportSales", "admin", "ObjectName eq 'ImportSales' and UserName eq 'admin'"},
 		{"all five", "2026-04-25T10:00:00Z", "2026-04-25T18:00:00Z", "Process", "ImportSales", "admin",
-			"TimeStamp ge 2026-04-25T10:00:00Z and TimeStamp le 2026-04-25T18:00:00Z and ObjectType eq 'Process' and ObjectName eq 'ImportSales' and User eq 'admin'"},
+			"TimeStamp ge 2026-04-25T10:00:00Z and TimeStamp le 2026-04-25T18:00:00Z and ObjectType eq 'Process' and ObjectName eq 'ImportSales' and UserName eq 'admin'"},
 		{"object-type with embedded quote", "", "", "O'Brien", "", "", "ObjectType eq 'O''Brien'"},
 		{"object-name with embedded quote", "", "", "", "O'Brien", "", "ObjectName eq 'O''Brien'"},
-		{"user with embedded quote", "", "", "", "", "O'Brien", "User eq 'O''Brien'"},
+		{"user with embedded quote", "", "", "", "", "O'Brien", "UserName eq 'O''Brien'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,9 +104,9 @@ func TestBuildAuditQuery_EmptyOrderByOmitsOrderby(t *testing.T) {
 
 func TestApplyAuditClientFilters(t *testing.T) {
 	entries := []model.AuditLogEntry{
-		{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales"},
-		{ID: "2", TimeStamp: "2026-04-25T11:00:00Z", User: "bob", ObjectType: "Process", ObjectName: "ImportSales"},
-		{ID: "3", TimeStamp: "2026-04-25T12:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales"},
+		{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales"},
+		{ID: "2", TimeStamp: "2026-04-25T11:00:00Z", UserName: "bob", ObjectType: "Process", ObjectName: "ImportSales"},
+		{ID: "3", TimeStamp: "2026-04-25T12:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales"},
 	}
 
 	t.Run("since drops older", func(t *testing.T) {
@@ -323,7 +323,7 @@ func TestBoundaryAuditIDs(t *testing.T) {
 
 	t.Run("ID-less entries get synthetic dedupe key", func(t *testing.T) {
 		entries := []model.AuditLogEntry{
-			{ID: "", TimeStamp: "2026-04-25T12:00:00Z", User: "u", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+			{ID: "", TimeStamp: "2026-04-25T12:00:00Z", UserName: "u", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
 			{ID: "abc", TimeStamp: "2026-04-25T12:00:00Z"},
 		}
 		ts, ids := boundaryAuditIDs(entries)
@@ -352,7 +352,7 @@ func TestAuditIDKey(t *testing.T) {
 	})
 
 	t.Run("synthesizes key when ID empty", func(t *testing.T) {
-		e := model.AuditLogEntry{ID: "", TimeStamp: "2026-04-25T10:00:00Z", User: "u", ObjectType: "Cube", ObjectName: "Sales"}
+		e := model.AuditLogEntry{ID: "", TimeStamp: "2026-04-25T10:00:00Z", UserName: "u", ObjectType: "Cube", ObjectName: "Sales"}
 		got := auditIDKey(e)
 		if got == "" {
 			t.Errorf("auditIDKey for ID='' must synthesize a non-empty key")
@@ -364,8 +364,8 @@ func TestAuditIDKey(t *testing.T) {
 
 	t.Run("distinct same-TS entries get distinct synth keys", func(t *testing.T) {
 		ts := "2026-04-25T10:00:00Z"
-		a := model.AuditLogEntry{ID: "", TimeStamp: ts, User: "u", ObjectType: "Cube", ObjectName: "SalesA"}
-		b := model.AuditLogEntry{ID: "", TimeStamp: ts, User: "u", ObjectType: "Cube", ObjectName: "SalesB"}
+		a := model.AuditLogEntry{ID: "", TimeStamp: ts, UserName: "u", ObjectType: "Cube", ObjectName: "SalesA"}
+		b := model.AuditLogEntry{ID: "", TimeStamp: ts, UserName: "u", ObjectType: "Cube", ObjectName: "SalesB"}
 		if auditIDKey(a) == auditIDKey(b) {
 			t.Errorf("distinct same-timestamp entries must produce distinct synth keys")
 		}
@@ -373,8 +373,8 @@ func TestAuditIDKey(t *testing.T) {
 
 	t.Run("identical entries get identical synth keys", func(t *testing.T) {
 		ts := "2026-04-25T10:00:00Z"
-		a := model.AuditLogEntry{ID: "", TimeStamp: ts, User: "u", ObjectType: "Cube", ObjectName: "Sales"}
-		b := model.AuditLogEntry{ID: "", TimeStamp: ts, User: "u", ObjectType: "Cube", ObjectName: "Sales"}
+		a := model.AuditLogEntry{ID: "", TimeStamp: ts, UserName: "u", ObjectType: "Cube", ObjectName: "Sales"}
+		b := model.AuditLogEntry{ID: "", TimeStamp: ts, UserName: "u", ObjectType: "Cube", ObjectName: "Sales"}
 		if auditIDKey(a) != auditIDKey(b) {
 			t.Errorf("identical entries must produce identical synth keys")
 		}
@@ -426,8 +426,8 @@ func TestIsAuditLogDisabled(t *testing.T) {
 func TestRunLogsAudit_AuditLogEntryRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"value": [
-			{"ID":"uuid-abc","TimeStamp":"2026-04-25T10:00:00Z","User":"alice","ObjectType":"Cube","ObjectName":"Sales","Description":"Created","AuditDetails":"some detail"},
-			{"TimeStamp":"2026-04-25T10:01:00Z","User":"bob","ObjectType":"Process","ObjectName":"ImportSales","Description":"Updated"}
+			{"ID":"uuid-abc","TimeStamp":"2026-04-25T10:00:00Z","UserName":"alice","ObjectType":"Cube","ObjectName":"Sales","Description":"Created"},
+			{"TimeStamp":"2026-04-25T10:01:00Z","UserName":"bob","ObjectType":"Process","ObjectName":"ImportSales","Description":"Updated"}
 		]
 	}`)
 
@@ -443,16 +443,16 @@ func TestRunLogsAudit_AuditLogEntryRoundTrip(t *testing.T) {
 	if e0.ID != "uuid-abc" {
 		t.Errorf("ID = %q, want uuid-abc", e0.ID)
 	}
-	if e0.AuditDetails != "some detail" {
-		t.Errorf("AuditDetails = %q, want 'some detail'", e0.AuditDetails)
+	if e0.UserName != "alice" || e0.ObjectType != "Cube" || e0.ObjectName != "Sales" {
+		t.Errorf("unexpected e0 fields: UserName=%q ObjectType=%q ObjectName=%q", e0.UserName, e0.ObjectType, e0.ObjectName)
 	}
 
 	e1 := resp.Value[1]
 	if e1.ID != "" {
 		t.Errorf("missing ID should unmarshal to empty string, got %q", e1.ID)
 	}
-	if e1.User != "bob" || e1.ObjectType != "Process" {
-		t.Errorf("unexpected fields: User=%q ObjectType=%q", e1.User, e1.ObjectType)
+	if e1.UserName != "bob" || e1.ObjectType != "Process" {
+		t.Errorf("unexpected fields: UserName=%q ObjectType=%q", e1.UserName, e1.ObjectType)
 	}
 }
 
@@ -629,7 +629,7 @@ func TestRunLogsAudit_TableOutput(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(auditLogJSON(
 			model.AuditLogEntry{
-				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice",
+				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice",
 				ObjectType: "Cube", ObjectName: "Sales", Description: "Created",
 			},
 		))
@@ -661,7 +661,7 @@ func TestRunLogsAudit_JSONOutput(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(auditLogJSON(
 			model.AuditLogEntry{
-				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice",
+				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice",
 				ObjectType: "Cube", ObjectName: "Sales", Description: "Created",
 			},
 		))
@@ -680,7 +680,7 @@ func TestRunLogsAudit_JSONOutput(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d entries, want 1", len(got))
 	}
-	if got[0].User != "alice" || got[0].ObjectType != "Cube" {
+	if got[0].UserName != "alice" || got[0].ObjectType != "Cube" {
 		t.Errorf("got %+v, want alice/Cube", got[0])
 	}
 }
@@ -693,7 +693,7 @@ func TestRunLogsAudit_RawOutput(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(auditLogJSON(
 			model.AuditLogEntry{
-				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice",
+				ID: "uuid-1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice",
 				ObjectType: "Cube", ObjectName: "Sales", Description: "Created",
 			},
 		))
@@ -726,7 +726,7 @@ func TestRunLogsAudit_RawSanitizesAllFields(t *testing.T) {
 			model.AuditLogEntry{
 				ID:          "uuid-1",
 				TimeStamp:   "2026-04-25T10:00:00Z",
-				User:        "ali\nce",
+				UserName:        "ali\nce",
 				ObjectType:  "Cu\rbe",
 				ObjectName:  "Sa\tles",
 				Description: "Cre\nated",
@@ -802,7 +802,7 @@ func TestRunLogsAudit_ServerSideFilterReachesServer(t *testing.T) {
 		"TimeStamp ge ",
 		"ObjectType eq 'Cube'",
 		"ObjectName eq 'ImportSales'",
-		"User eq 'admin'",
+		"UserName eq 'admin'",
 	} {
 		if !strings.Contains(decoded, want) {
 			t.Errorf("query %q missing %q", decoded, want)
@@ -818,8 +818,8 @@ func TestRunLogsAudit_TailOrdering(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		// Server returns DESC order — newest first
 		w.Write(auditLogJSON(
-			model.AuditLogEntry{ID: "2", TimeStamp: "2026-04-25T11:00:00Z", User: "bob", ObjectType: "Cube", ObjectName: "Sales", Description: "Updated"},
-			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+			model.AuditLogEntry{ID: "2", TimeStamp: "2026-04-25T11:00:00Z", UserName: "bob", ObjectType: "Cube", ObjectName: "Sales", Description: "Updated"},
+			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
 		))
 	})
 
@@ -858,8 +858,8 @@ func TestRunLogsAudit_FilterFallbackOnHTTP400(t *testing.T) {
 		}
 		// Second call: no $filter — return mixed types; client should drop non-Cube.
 		w.Write(auditLogJSON(
-			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
-			model.AuditLogEntry{ID: "2", TimeStamp: "2026-04-25T10:01:00Z", User: "bob", ObjectType: "Process", ObjectName: "Import", Description: "Updated"},
+			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+			model.AuditLogEntry{ID: "2", TimeStamp: "2026-04-25T10:01:00Z", UserName: "bob", ObjectType: "Process", ObjectName: "Import", Description: "Updated"},
 		))
 	})
 
@@ -898,7 +898,7 @@ func TestRunLogsAudit_FilterRejectionMentioningEntityNameStillFallsBack(t *testi
 			return
 		}
 		w.Write(auditLogJSON(
-			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+			model.AuditLogEntry{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
 		))
 	})
 
@@ -987,7 +987,7 @@ func TestRunLogsAudit_FallbackTrimToTail(t *testing.T) {
 			entries = append(entries, model.AuditLogEntry{
 				ID:          fmt.Sprintf("%d", i+1),
 				TimeStamp:   time.Date(2026, 4, 25, 10, 0, i, 0, time.UTC).Format(time.RFC3339),
-				User:        "u",
+				UserName:        "u",
 				ObjectType:  objType,
 				ObjectName:  "Sales",
 				Description: "Changed",
@@ -1195,8 +1195,8 @@ func TestRunLogsAudit_FollowEmitsNDJSON(t *testing.T) {
 	resetCmdFlags(t)
 
 	entries := []model.AuditLogEntry{
-		{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
-		{ID: "2", TimeStamp: "2026-04-25T10:00:01Z", User: "bob", ObjectType: "Process", ObjectName: "Import", Description: "Updated"},
+		{ID: "1", TimeStamp: "2026-04-25T10:00:00Z", UserName: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"},
+		{ID: "2", TimeStamp: "2026-04-25T10:00:01Z", UserName: "bob", ObjectType: "Process", ObjectName: "Import", Description: "Updated"},
 	}
 
 	out := captureStdout(t, func() {
@@ -1226,8 +1226,8 @@ func TestRunLogsAudit_FollowSameBoundaryDedupe(t *testing.T) {
 	resetCmdFlags(t)
 
 	const ts = "2026-04-25T10:00:00Z"
-	entryA := model.AuditLogEntry{ID: "1", TimeStamp: ts, User: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"}
-	entryB := model.AuditLogEntry{ID: "2", TimeStamp: ts, User: "bob", ObjectType: "Cube", ObjectName: "Inventory", Description: "Deleted"}
+	entryA := model.AuditLogEntry{ID: "1", TimeStamp: ts, UserName: "alice", ObjectType: "Cube", ObjectName: "Sales", Description: "Created"}
+	entryB := model.AuditLogEntry{ID: "2", TimeStamp: ts, UserName: "bob", ObjectType: "Cube", ObjectName: "Inventory", Description: "Deleted"}
 
 	var pollCount int32
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {

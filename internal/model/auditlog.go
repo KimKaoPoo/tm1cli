@@ -1,19 +1,21 @@
 package model
 
 // AuditLogEntry represents a single entry from GET /AuditLogEntries.
-// Fields follow the TM1 v11 REST schema for tm1.AuditLogEntry.
+// Fields follow the TM1 PA REST schema for tm1.AuditLogEntry — note the
+// audit log uses UserName (not User as in TransactionLogEntry); the two
+// entity types diverge here.
 //
-// ID is Edm.String per IBM docs; older TM1 versions may omit it (empty == absent).
-// AuditDetails is optional and not always populated; it carries free-form
-// per-object change details when present.
+// ID is Edm.String per IBM docs; older TM1 versions may omit it (empty
+// == absent). AuditDetails is a navigation property in the schema and
+// only populates with $expand=AuditDetails — not requested here, so it
+// is intentionally not modelled.
 type AuditLogEntry struct {
-	ID           string `json:"ID,omitempty"`
-	TimeStamp    string `json:"TimeStamp"`
-	User         string `json:"User,omitempty"`
-	ObjectType   string `json:"ObjectType,omitempty"`
-	ObjectName   string `json:"ObjectName,omitempty"`
-	Description  string `json:"Description,omitempty"`
-	AuditDetails string `json:"AuditDetails,omitempty"`
+	ID          string `json:"ID,omitempty"`
+	TimeStamp   string `json:"TimeStamp"`
+	UserName    string `json:"UserName,omitempty"`
+	ObjectType  string `json:"ObjectType,omitempty"`
+	ObjectName  string `json:"ObjectName,omitempty"`
+	Description string `json:"Description,omitempty"`
 }
 
 // AuditLogResponse is the OData collection wrapper for GET /AuditLogEntries.

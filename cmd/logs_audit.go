@@ -115,7 +115,7 @@ func buildAuditFilter(sinceTS, untilTS, objectType, objectName, user string) str
 		parts = append(parts, fmt.Sprintf("ObjectName eq '%s'", odataEscape(objectName)))
 	}
 	if user != "" {
-		parts = append(parts, fmt.Sprintf("User eq '%s'", odataEscape(user)))
+		parts = append(parts, fmt.Sprintf("UserName eq '%s'", odataEscape(user)))
 	}
 	return strings.Join(parts, " and ")
 }
@@ -229,7 +229,7 @@ func applyAuditClientFilters(entries []model.AuditLogEntry, sinceTS, untilTS, ob
 		if objectName != "" && e.ObjectName != objectName {
 			continue
 		}
-		if user != "" && e.User != user {
+		if user != "" && e.UserName != user {
 			continue
 		}
 		out = append(out, e)
@@ -301,11 +301,10 @@ func auditIDKey(e model.AuditLogEntry) string {
 	return strings.Join([]string{
 		"syn",
 		e.TimeStamp,
-		e.User,
+		e.UserName,
 		e.ObjectType,
 		e.ObjectName,
 		e.Description,
-		e.AuditDetails,
 	}, sep)
 }
 
@@ -366,7 +365,7 @@ func printAuditEntries(entries []model.AuditLogEntry, jsonMode, rawMode, isFollo
 		for _, e := range entries {
 			fmt.Printf("%s %s %s %s %s\n",
 				e.TimeStamp,
-				sanitizeRawMessage(e.User),
+				sanitizeRawMessage(e.UserName),
 				sanitizeRawMessage(e.ObjectType),
 				sanitizeRawMessage(e.ObjectName),
 				sanitizeRawMessage(e.Description),
@@ -379,7 +378,7 @@ func printAuditEntries(entries []model.AuditLogEntry, jsonMode, rawMode, isFollo
 	for i, e := range entries {
 		rows[i] = []string{
 			e.TimeStamp,
-			sanitizeRawMessage(e.User),
+			sanitizeRawMessage(e.UserName),
 			sanitizeRawMessage(e.ObjectType),
 			sanitizeRawMessage(e.ObjectName),
 			sanitizeRawMessage(e.Description),
