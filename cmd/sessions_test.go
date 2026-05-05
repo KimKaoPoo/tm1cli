@@ -203,6 +203,60 @@ func TestSessionsList_All(t *testing.T) {
 	}
 }
 
+func TestSessionsList_TruncationUsesODataCount(t *testing.T) {
+	resetCmdFlags(t)
+	// Return 150 rows but tell the client the server actually has 283 via
+	// @odata.count. Summary must reflect the authoritative server total.
+	sessions := make([]model.Session, 150)
+	for i := range sessions {
+		sessions[i] = makeSession(int64(i+1), "user", 0)
+	}
+	body := struct {
+		Count int64           `json:"@odata.count"`
+		Value []model.Session `json:"value"`
+	}{Count: 283, Value: sessions}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(body)
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Showing 50 of 283") {
+		t.Errorf("expected truncation summary to use @odata.count (283), got: %s", cap.Stderr)
+	}
+	if strings.Contains(cap.Stderr, "of 150") || strings.Contains(cap.Stderr, "150+") {
+		t.Errorf("summary should not show 150 when server reported 283, got: %s", cap.Stderr)
+	}
+}
+
+func TestSessionsList_TruncationApproximateOnCapHit(t *testing.T) {
+	resetCmdFlags(t)
+	// Server doesn't honor $count=true (no @odata.count in body) AND
+	// returns exactly limit+probe rows → summary must signal cap-hit
+	// with a "+" instead of asserting precision we don't have.
+	sessions := make([]model.Session, 150)
+	for i := range sessions {
+		sessions[i] = makeSession(int64(i+1), "user", 0)
+	}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(sessionsJSON(sessions...))
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Showing 50 of 150+") {
+		t.Errorf("expected approximate-total summary 'Showing 50 of 150+', got: %s", cap.Stderr)
+	}
+}
+
 func TestSessionsList_Truncation(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := make([]model.Session, 55)
@@ -649,6 +703,38 @@ func TestSessionsClose_ActiveSessionLookupFails_ConfirmProceed(t *testing.T) {
 	}
 	if !strings.Contains(cap.Stderr, "could not verify whether this is your active session") {
 		t.Errorf("expected user-visible warning on stderr, got: %s", cap.Stderr)
+	}
+}
+
+func TestSessionsClose_JSON_PromptDoesNotCorruptStdout(t *testing.T) {
+	resetCmdFlags(t)
+	// Self-close path WITHOUT --yes triggers an interactive prompt.
+	// In --output json mode, the prompt must not leak onto stdout.
+	posts := 0
+	setupMockTM1(t, newCloseHandler(closeHandlerOpts{
+		activeSessionID: 42,
+		postsCaptured:   &posts,
+	}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "close", "42", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(cap.Stdout, "(y/N)") || strings.Contains(cap.Stdout, "Continue") {
+		t.Errorf("prompt text leaked onto stdout (corrupts JSON consumers): %q", cap.Stdout)
+	}
+	// Stdout should be ONLY the success JSON document.
+	var result map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(cap.Stdout)), &result); err != nil {
+		t.Fatalf("stdout is not clean JSON: %v\nstdout: %q", err, cap.Stdout)
+	}
+	if result["status"] != "closed" || result["id"] != "42" {
+		t.Errorf("unexpected JSON: %+v", result)
+	}
+	if posts != 1 {
+		t.Errorf("expected POST after explicit confirm, got %d", posts)
 	}
 }
 

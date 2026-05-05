@@ -24,8 +24,12 @@ type SessionThread struct {
 }
 
 // SessionResponse is the OData collection wrapper for GET /Sessions.
+//
+// Count holds @odata.count when the request used $count=true and the
+// server honored it. Pointer so absence is distinguishable from zero.
 type SessionResponse struct {
 	Value []Session `json:"value"`
+	Count *int64    `json:"@odata.count,omitempty"`
 }
 
 // ActiveSessionRef captures the ID of the current authenticated session

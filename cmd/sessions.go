@@ -24,11 +24,12 @@ var (
 )
 
 const (
-	sessionsListBase     = "Sessions?$select=ID,Context,Active&$expand=User($select=Name)"
+	sessionsListBase     = "Sessions?$count=true&$select=ID,Context,Active&$expand=User($select=Name)"
 	sessionsThreadsParam = ",Threads($select=ID)"
 	// Over-fetch buffer above --limit so the client can detect that the
 	// server actually had more rows and emit "Showing 50 of N" instead of
-	// silently capping at exactly --limit.
+	// silently capping at exactly --limit. Used as a fallback when the
+	// server doesn't honor $count=true.
 	sessionsTruncationProbe = 100
 )
 
@@ -90,15 +91,35 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	limit := getLimit(cfg, sessionsLimit, sessionsAll)
 	activeFilters := sessionsUser != ""
 
-	sessions, threadsAvailable, err := fetchSessions(cl, limit, activeFilters)
+	sessions, threadsAvailable, serverCount, err := fetchSessions(cl, limit, activeFilters)
 	if err != nil {
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
 	}
 
 	filtered := filterSessions(sessions, sessionsUser)
-	displaySessions(filtered, len(filtered), limit, jsonMode, threadsAvailable)
+	total, totalIsApprox := resolveTotal(filtered, sessions, serverCount, limit, activeFilters)
+	displaySessions(filtered, total, totalIsApprox, limit, jsonMode, threadsAvailable)
 	return nil
+}
+
+// resolveTotal picks the most accurate "of N" total for the truncation
+// summary. When client-side filters are active the server total isn't
+// meaningful, so use the post-filter slice. When no filters are active,
+// prefer @odata.count from the server. If the server didn't honor $count
+// and we hit the over-fetch cap, return an approximate flag so the
+// summary can render "of N+" instead of asserting precision we don't have.
+func resolveTotal(filtered, fetched []model.Session, serverCount *int64, limit int, activeFilters bool) (int, bool) {
+	if activeFilters {
+		return len(filtered), false
+	}
+	if serverCount != nil && *serverCount >= 0 {
+		return int(*serverCount), false
+	}
+	if limit > 0 && len(fetched) >= limit+sessionsTruncationProbe {
+		return len(fetched), true
+	}
+	return len(fetched), false
 }
 
 // fetchSessions issues GET /Sessions with the full $expand. If the server
@@ -106,7 +127,7 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 // retries without that clause and returns threadsAvailable=false. The retry
 // path returns retryErr on retry failure (so the user sees the actual second
 // failure), and the original error otherwise.
-func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Session, bool, error) {
+func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Session, bool, *int64, error) {
 	topClause := ""
 	if limit > 0 && !activeFilters {
 		topClause = fmt.Sprintf("&$top=%d", limit+sessionsTruncationProbe)
@@ -115,25 +136,25 @@ func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Se
 	data, err := cl.Get(sessionsListBase + sessionsThreadsParam + topClause)
 	if err != nil {
 		if !isExpandRejection(err) {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 		retryData, retryErr := cl.Get(sessionsListBase + topClause)
 		if retryErr != nil {
-			return nil, false, retryErr
+			return nil, false, nil, retryErr
 		}
 		output.PrintWarning("server rejected $expand=Threads — Threads column unavailable")
 		var resp model.SessionResponse
 		if jsonErr := json.Unmarshal(retryData, &resp); jsonErr != nil {
-			return nil, false, fmt.Errorf("Cannot parse server response.")
+			return nil, false, nil, fmt.Errorf("Cannot parse server response.")
 		}
-		return resp.Value, false, nil
+		return resp.Value, false, resp.Count, nil
 	}
 
 	var resp model.SessionResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, false, fmt.Errorf("Cannot parse server response.")
+		return nil, false, nil, fmt.Errorf("Cannot parse server response.")
 	}
-	return resp.Value, true, nil
+	return resp.Value, true, resp.Count, nil
 }
 
 // isExpandRejection reports whether err is a 400/501 OData rejection that
@@ -174,7 +195,7 @@ func filterSessions(sessions []model.Session, user string) []model.Session {
 	return out
 }
 
-func displaySessions(sessions []model.Session, total int, limit int, jsonMode bool, threadsAvailable bool) {
+func displaySessions(sessions []model.Session, total int, totalIsApprox bool, limit int, jsonMode bool, threadsAvailable bool) {
 	shown := sessions
 	if limit > 0 && len(shown) > limit {
 		shown = shown[:limit]
@@ -201,7 +222,16 @@ func displaySessions(sessions []model.Session, total int, limit int, jsonMode bo
 		}
 	}
 	output.PrintTable(headers, rows)
-	output.PrintSummary(len(shown), total, "--user to filter or --all")
+
+	if len(shown) < total {
+		suffix := ""
+		if totalIsApprox {
+			// Server didn't honor $count=true and we hit the over-fetch cap;
+			// the real total is at least this number.
+			suffix = "+"
+		}
+		fmt.Fprintf(os.Stderr, "Showing %d of %d%s. Use --user to filter or --all to show everything.\n", len(shown), total, suffix)
+	}
 }
 
 func runSessionsClose(cmd *cobra.Command, args []string) error {
