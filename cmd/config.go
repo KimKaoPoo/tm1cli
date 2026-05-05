@@ -637,7 +637,9 @@ func init() {
 // helpers
 
 func promptYesNo(reader *bufio.Reader, prompt string) bool {
-	fmt.Printf("%s (y/N) ", prompt)
+	// Write to stderr so callers using --output json keep stdout clean
+	// for machine consumers (the prompt is interactive UI, not data).
+	fmt.Fprintf(os.Stderr, "%s (y/N) ", prompt)
 	answer, _ := reader.ReadString('\n')
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "y" || answer == "yes"
