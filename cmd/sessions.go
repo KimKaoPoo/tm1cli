@@ -238,13 +238,19 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 
 	if !sessionsCloseYes {
 		isSelfClose, selfErr := detectSelfClose(cl, idNum)
-		if selfErr != nil {
-			output.PrintWarning("could not verify whether this is your active session — proceeding")
+		switch {
+		case selfErr != nil:
+			// Fail closed: when ActiveSession lookup is unavailable we can't
+			// rule out that this is the user's own session, so prompt rather
+			// than silently proceed into an accidental self-logout.
+			output.PrintWarning("could not verify whether this is your active session")
 			if flagVerbose {
 				fmt.Fprintf(os.Stderr, "[verbose] ActiveSession lookup error: %s\n", selfErr)
 			}
-		}
-		if isSelfClose {
+			if !promptYesNo(bufio.NewReader(os.Stdin), "Continue anyway?") {
+				return nil
+			}
+		case isSelfClose:
 			fmt.Fprintf(os.Stderr, "Warning: '%s' is your active session. Closing it will log you out.\n", id)
 			if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
 				return nil

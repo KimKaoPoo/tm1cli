@@ -605,27 +605,50 @@ func TestSessionsClose_JSONInvalidID(t *testing.T) {
 	}
 }
 
-func TestSessionsClose_ActiveSessionLookupFails(t *testing.T) {
+func TestSessionsClose_ActiveSessionLookupFails_AbortDeclined(t *testing.T) {
 	resetCmdFlags(t)
 	posts := 0
 	setupMockTM1(t, newCloseHandler(closeHandlerOpts{
 		activeSessionStatus: http.StatusInternalServerError,
 		postsCaptured:       &posts,
 	}))
+	injectStdin(t, "n\n")
 
 	cap := captureAll(t, func() {
 		rootCmd.SetArgs([]string{"sessions", "close", "42", "--verbose"})
 		rootCmd.Execute()
 	})
 
-	if posts != 1 {
-		t.Errorf("expected POST to proceed despite ActiveSession lookup failure, got %d POSTs", posts)
+	if posts != 0 {
+		t.Errorf("expected fail-closed abort (no POST) when user declines, got %d POSTs", posts)
 	}
 	if !strings.Contains(cap.Stderr, "could not verify whether this is your active session") {
 		t.Errorf("expected user-visible warning on stderr, got: %s", cap.Stderr)
 	}
 	if !strings.Contains(cap.Stderr, "[verbose] ActiveSession lookup error") {
 		t.Errorf("expected verbose diagnostic on stderr, got: %s", cap.Stderr)
+	}
+}
+
+func TestSessionsClose_ActiveSessionLookupFails_ConfirmProceed(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCloseHandler(closeHandlerOpts{
+		activeSessionStatus: http.StatusInternalServerError,
+		postsCaptured:       &posts,
+	}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sessions", "close", "42"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected POST after explicit confirm, got %d POSTs", posts)
+	}
+	if !strings.Contains(cap.Stderr, "could not verify whether this is your active session") {
+		t.Errorf("expected user-visible warning on stderr, got: %s", cap.Stderr)
 	}
 }
 
