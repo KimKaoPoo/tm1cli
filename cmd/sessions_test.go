@@ -6,56 +6,32 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 	"tm1cli/internal/model"
 )
 
 // --- Unit tests ---
 
 func TestFilterSessions(t *testing.T) {
-	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	sessions := []model.Session{
-		{ID: 1, User: model.SessionUser{Name: "Admin"}, LastActivity: now.Add(-2 * time.Hour).Format(time.RFC3339)},
-		{ID: 2, User: model.SessionUser{Name: "UserA"}, LastActivity: now.Add(-5 * time.Minute).Format(time.RFC3339)},
-		{ID: 3, User: model.SessionUser{Name: "worker"}, LastActivity: ""},
+		{ID: 1, User: model.SessionUser{Name: "Admin"}},
+		{ID: 2, User: model.SessionUser{Name: "UserA"}},
+		{ID: 3, User: model.SessionUser{Name: "worker"}},
 	}
 
 	tests := []struct {
-		name        string
-		user        string
-		inactiveFor time.Duration
-		wantIDs     []int64
+		name    string
+		user    string
+		wantIDs []int64
 	}{
-		{
-			name:    "no filters returns all",
-			wantIDs: []int64{1, 2, 3},
-		},
-		{
-			name:    "filter by user case-insensitively",
-			user:    "admin",
-			wantIDs: []int64{1},
-		},
-		{
-			name:        "filter by inactive-for keeps stale sessions",
-			inactiveFor: 1 * time.Hour,
-			wantIDs:     []int64{1, 3}, // session 3 has empty LastActivity → kept (unknown age)
-		},
-		{
-			name:        "filter by inactive-for combined with user",
-			user:        "admin",
-			inactiveFor: 1 * time.Hour,
-			wantIDs:     []int64{1},
-		},
-		{
-			name:    "all filtered out returns nil",
-			user:    "nobody",
-			wantIDs: nil,
-		},
+		{name: "no filter returns all", wantIDs: []int64{1, 2, 3}},
+		{name: "filter by user case-insensitively", user: "admin", wantIDs: []int64{1}},
+		{name: "partial match", user: "user", wantIDs: []int64{2}},
+		{name: "all filtered out returns nil", user: "nobody", wantIDs: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filterSessions(sessions, tt.user, tt.inactiveFor, now)
+			got := filterSessions(sessions, tt.user)
 			if len(got) != len(tt.wantIDs) {
 				t.Fatalf("got %d sessions, want %d", len(got), len(tt.wantIDs))
 			}
@@ -63,35 +39,6 @@ func TestFilterSessions(t *testing.T) {
 				if got[i].ID != id {
 					t.Errorf("got[%d].ID = %d, want %d", i, got[i].ID, id)
 				}
-			}
-		})
-	}
-}
-
-func TestFormatLastActivity(t *testing.T) {
-	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "empty", input: "", want: ""},
-		{name: "30s ago", input: now.Add(-30 * time.Second).Format(time.RFC3339), want: "30s ago"},
-		{name: "5m ago", input: now.Add(-5 * time.Minute).Format(time.RFC3339), want: "5m ago"},
-		{name: "2h ago", input: now.Add(-2 * time.Hour).Format(time.RFC3339), want: "2h ago"},
-		{name: "3d ago", input: now.Add(-3 * 24 * time.Hour).Format(time.RFC3339), want: "3d ago"},
-		{name: "absolute past 7d", input: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339), want: "2026-04-04 12:00"},
-		{name: "rfc3339nano accepted", input: now.Add(-1 * time.Hour).Format(time.RFC3339Nano), want: "1h ago"},
-		{name: "future timestamp clamps to 0s", input: now.Add(1 * time.Hour).Format(time.RFC3339), want: "0s ago"},
-		{name: "unparseable echoed raw", input: "not-a-time", want: "not-a-time"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatLastActivity(tt.input, now)
-			if got != tt.want {
-				t.Errorf("formatLastActivity(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -122,20 +69,17 @@ func TestIsExpandRejection(t *testing.T) {
 
 // --- Integration: sessions list ---
 
-// makeSession returns a Session with sensible defaults relative to now.
-func makeSession(id int64, user string, ageMinutes int, threads int) model.Session {
-	now := time.Now()
+func makeSession(id int64, user string, threads int) model.Session {
 	threadList := make([]model.SessionThread, threads)
 	for i := 0; i < threads; i++ {
 		threadList[i] = model.SessionThread{ID: int64(i + 1)}
 	}
 	return model.Session{
-		ID:           id,
-		User:         model.SessionUser{Name: user},
-		Context:      "REST",
-		Active:       false,
-		LastActivity: now.Add(-time.Duration(ageMinutes) * time.Minute).Format(time.RFC3339),
-		Threads:      threadList,
+		ID:      id,
+		User:    model.SessionUser{Name: user},
+		Context: "REST",
+		Active:  false,
+		Threads: threadList,
 	}
 }
 
@@ -165,8 +109,8 @@ func TestSessionsList_Empty(t *testing.T) {
 func TestSessionsList_Populated(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := []model.Session{
-		makeSession(1, "Admin", 10, 2),
-		makeSession(2, "UserA", 60, 0),
+		makeSession(1, "Admin", 2),
+		makeSession(2, "UserA", 0),
 	}
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -188,8 +132,8 @@ func TestSessionsList_Populated(t *testing.T) {
 func TestSessionsList_FilterByUser(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := []model.Session{
-		makeSession(1, "Admin", 10, 0),
-		makeSession(2, "UserA", 10, 0),
+		makeSession(1, "Admin", 0),
+		makeSession(2, "UserA", 0),
 	}
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -209,50 +153,9 @@ func TestSessionsList_FilterByUser(t *testing.T) {
 	}
 }
 
-func TestSessionsList_FilterByInactiveFor(t *testing.T) {
-	resetCmdFlags(t)
-	// Recent session (5 min ago) should be filtered out by --inactive-for 1h.
-	// Stale session (2h ago) should remain.
-	recent := makeSession(1, "Recent", 5, 0)
-	stale := makeSession(2, "Stale", 120, 0)
-	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(sessionsJSON(recent, stale))
-	})
-
-	cap := captureAll(t, func() {
-		rootCmd.SetArgs([]string{"sessions", "list", "--inactive-for", "1h"})
-		rootCmd.Execute()
-	})
-
-	if !strings.Contains(cap.Stdout, "Stale") {
-		t.Errorf("expected Stale in stdout, got: %s", cap.Stdout)
-	}
-	if strings.Contains(cap.Stdout, "Recent") {
-		t.Errorf("Recent should be filtered out, got: %s", cap.Stdout)
-	}
-}
-
-func TestSessionsList_InvalidInactiveFor(t *testing.T) {
-	resetCmdFlags(t)
-	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(sessionsJSON())
-	})
-
-	cap := captureAll(t, func() {
-		rootCmd.SetArgs([]string{"sessions", "list", "--inactive-for", "bad"})
-		rootCmd.Execute()
-	})
-
-	if !strings.Contains(cap.Stderr, "inactive-for") {
-		t.Errorf("expected error mentioning inactive-for, got: %s", cap.Stderr)
-	}
-}
-
 func TestSessionsListJSON(t *testing.T) {
 	resetCmdFlags(t)
-	session := makeSession(42, "Admin", 0, 1)
+	session := makeSession(42, "Admin", 1)
 	session.Active = true
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -280,7 +183,7 @@ func TestSessionsList_All(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := make([]model.Session, 60)
 	for i := range sessions {
-		sessions[i] = makeSession(int64(i+1), "user", 1, 0)
+		sessions[i] = makeSession(int64(i+1), "user", 0)
 	}
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -304,7 +207,7 @@ func TestSessionsList_Truncation(t *testing.T) {
 	resetCmdFlags(t)
 	sessions := make([]model.Session, 55)
 	for i := range sessions {
-		sessions[i] = makeSession(int64(i+1), "user", 1, 0)
+		sessions[i] = makeSession(int64(i+1), "user", 0)
 	}
 	var gotURL string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +231,7 @@ func TestSessionsList_Truncation(t *testing.T) {
 
 func TestSessionsList_FilterSkipsTop(t *testing.T) {
 	resetCmdFlags(t)
-	sessions := []model.Session{makeSession(1, "Admin", 1, 0)}
+	sessions := []model.Session{makeSession(1, "Admin", 0)}
 	var gotURL string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		gotURL = r.URL.String()
@@ -358,8 +261,8 @@ func TestSessionsList_VerboseShowsEndpoint(t *testing.T) {
 		rootCmd.Execute()
 	})
 
-	if !strings.Contains(cap.Stderr, "Sessions") {
-		t.Errorf("expected verbose stderr to mention Sessions endpoint, got: %s", cap.Stderr)
+	if !strings.Contains(cap.Stderr, "[verbose]") || !strings.Contains(cap.Stderr, "GET ") || !strings.Contains(cap.Stderr, "/Sessions") {
+		t.Errorf("expected verbose stderr to log the GET /Sessions request, got: %s", cap.Stderr)
 	}
 }
 
@@ -396,7 +299,7 @@ func TestSessionsList_ThreadsExpandFallbackRetryFails(t *testing.T) {
 
 func TestSessionsList_ThreadsExpandFallback(t *testing.T) {
 	resetCmdFlags(t)
-	sessions := []model.Session{makeSession(1, "Admin", 1, 0)}
+	sessions := []model.Session{makeSession(1, "Admin", 0)}
 	calls := 0
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -587,22 +490,47 @@ func TestSessionsClose_SelfCloseWithYes(t *testing.T) {
 
 func TestSessionsClose_DryRun(t *testing.T) {
 	resetCmdFlags(t)
-	posts := 0
-	setupMockTM1(t, newCloseHandler(closeHandlerOpts{
-		activeSessionID: 999,
-		postsCaptured:   &posts,
-	}))
+	httpCalls := 0
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		httpCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 
 	cap := captureAll(t, func() {
 		rootCmd.SetArgs([]string{"sessions", "close", "123", "--dry-run"})
 		rootCmd.Execute()
 	})
 
-	if posts != 0 {
-		t.Errorf("expected 0 POSTs on --dry-run, got %d", posts)
+	// Dry-run is a pure preview: zero HTTP traffic, including the
+	// /ActiveSession lookup that drives self-close detection.
+	if httpCalls != 0 {
+		t.Errorf("expected 0 HTTP calls on --dry-run, got %d", httpCalls)
 	}
 	if !strings.Contains(cap.Stdout, "[dry-run] Would close session '123'") {
 		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+}
+
+func TestSessionsClose_SelfCloseLeadingZero(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCloseHandler(closeHandlerOpts{
+		activeSessionID: 42,
+		postsCaptured:   &posts,
+	}))
+	injectStdin(t, "n\n")
+
+	cap := captureAll(t, func() {
+		// Leading zeros must still match the active session ID 42 numerically.
+		rootCmd.SetArgs([]string{"sessions", "close", "0042"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected leading-zero ID to be detected as self-close (no POST), got %d POSTs", posts)
+	}
+	if !strings.Contains(cap.Stderr, "your active session") {
+		t.Errorf("expected self-close warning, got: %s", cap.Stderr)
 	}
 }
 

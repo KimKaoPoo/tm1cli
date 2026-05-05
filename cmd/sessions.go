@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 	"tm1cli/internal/client"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -18,7 +17,6 @@ import (
 
 var (
 	sessionsUser        string
-	sessionsInactiveFor string
 	sessionsLimit       int
 	sessionsAll         bool
 	sessionsCloseYes    bool
@@ -26,7 +24,7 @@ var (
 )
 
 const (
-	sessionsListBase     = "Sessions?$select=ID,Context,Active,LastActivity&$expand=User($select=Name)"
+	sessionsListBase     = "Sessions?$select=ID,Context,Active&$expand=User($select=Name)"
 	sessionsThreadsParam = ",Threads($select=ID)"
 	// Over-fetch buffer above --limit so the client can detect that the
 	// server actually had more rows and emit "Showing 50 of N" instead of
@@ -47,13 +45,9 @@ var sessionsListCmd = &cobra.Command{
 
 REST API: GET /Sessions
 
-Results are limited to 50 by default. Use --all to show all sessions.
-
-Filter --inactive-for accepts a Go duration (e.g. 30m, 1h, 1h30m) and
-keeps only sessions whose LastActivity is at least that old.`,
+Results are limited to 50 by default. Use --all to show all sessions.`,
 	Example: `  tm1cli sessions list
   tm1cli sessions list --user admin
-  tm1cli sessions list --inactive-for 1h
   tm1cli sessions list --all
   tm1cli sessions list --output json`,
 	RunE: runSessionsList,
@@ -64,7 +58,7 @@ var sessionsCloseCmd = &cobra.Command{
 	Short: "Close an active session",
 	Long: `Close an active session on the TM1 server.
 
-REST API: POST /Sessions('<id>')/tm1.Close
+REST API: POST /Sessions(<id>)/tm1.Close
 
 The command prompts for confirmation only when closing your OWN active
 session (the one this CLI is authenticated through), since closing it
@@ -93,22 +87,8 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	var inactiveFor time.Duration
-	if sessionsInactiveFor != "" {
-		d, err := time.ParseDuration(sessionsInactiveFor)
-		if err != nil {
-			output.PrintError(fmt.Sprintf("Invalid --inactive-for value %q: %s", sessionsInactiveFor, err), jsonMode)
-			return errSilent
-		}
-		if d < 0 {
-			output.PrintError(fmt.Sprintf("--inactive-for duration must be non-negative (got %q)", sessionsInactiveFor), jsonMode)
-			return errSilent
-		}
-		inactiveFor = d
-	}
-
 	limit := getLimit(cfg, sessionsLimit, sessionsAll)
-	activeFilters := sessionsUser != "" || sessionsInactiveFor != ""
+	activeFilters := sessionsUser != ""
 
 	sessions, threadsAvailable, err := fetchSessions(cl, limit, activeFilters)
 	if err != nil {
@@ -116,16 +96,16 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	now := time.Now()
-	filtered := filterSessions(sessions, sessionsUser, inactiveFor, now)
-	displaySessions(filtered, len(filtered), limit, jsonMode, threadsAvailable, now)
+	filtered := filterSessions(sessions, sessionsUser)
+	displaySessions(filtered, len(filtered), limit, jsonMode, threadsAvailable)
 	return nil
 }
 
 // fetchSessions issues GET /Sessions with the full $expand. If the server
 // rejects $expand=Threads (HTTP 400/501 with an expand-related body), it
-// retries without that clause and returns threadsAvailable=false. On any
-// other error, the original error is surfaced.
+// retries without that clause and returns threadsAvailable=false. The retry
+// path returns retryErr on retry failure (so the user sees the actual second
+// failure), and the original error otherwise.
 func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Session, bool, error) {
 	topClause := ""
 	if limit > 0 && !activeFilters {
@@ -139,9 +119,6 @@ func fetchSessions(cl *client.Client, limit int, activeFilters bool) ([]model.Se
 		}
 		retryData, retryErr := cl.Get(sessionsListBase + topClause)
 		if retryErr != nil {
-			// Surface the retry error so the user sees the actual failure
-			// (auth lost, network drop, etc.) instead of the misleading
-			// expand-rejection from the first attempt.
 			return nil, false, retryErr
 		}
 		output.PrintWarning("server rejected $expand=Threads — Threads column unavailable")
@@ -182,57 +159,22 @@ func isExpandRejection(err error) bool {
 		strings.Contains(lower, "not implemented")
 }
 
-func filterSessions(sessions []model.Session, user string, inactiveFor time.Duration, now time.Time) []model.Session {
-	if user == "" && inactiveFor == 0 {
+func filterSessions(sessions []model.Session, user string) []model.Session {
+	if user == "" {
 		return sessions
 	}
 	userLower := strings.ToLower(user)
 	var out []model.Session
 	for _, s := range sessions {
-		if user != "" && !strings.Contains(strings.ToLower(s.User.Name), userLower) {
+		if !strings.Contains(strings.ToLower(s.User.Name), userLower) {
 			continue
-		}
-		if inactiveFor > 0 {
-			if t, err := parseTimeStamp(s.LastActivity); err == nil && now.Sub(t) < inactiveFor {
-				continue
-			}
-			// parse failure → keep entry (unknown age, never silently dropped)
 		}
 		out = append(out, s)
 	}
 	return out
 }
 
-// formatLastActivity renders LastActivity relative to now. Empty input
-// returns "" and unparseable input is echoed verbatim so the user can
-// still see what the server sent.
-func formatLastActivity(s string, now time.Time) string {
-	if s == "" {
-		return ""
-	}
-	t, err := parseTimeStamp(s)
-	if err != nil {
-		return s
-	}
-	d := now.Sub(t)
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	default:
-		return t.UTC().Format("2006-01-02 15:04")
-	}
-}
-
-func displaySessions(sessions []model.Session, total int, limit int, jsonMode bool, threadsAvailable bool, now time.Time) {
+func displaySessions(sessions []model.Session, total int, limit int, jsonMode bool, threadsAvailable bool) {
 	shown := sessions
 	if limit > 0 && len(shown) > limit {
 		shown = shown[:limit]
@@ -243,7 +185,7 @@ func displaySessions(sessions []model.Session, total int, limit int, jsonMode bo
 		return
 	}
 
-	headers := []string{"ID", "USER", "CONTEXT", "ACTIVE", "LAST ACTIVITY", "THREADS"}
+	headers := []string{"ID", "USER", "CONTEXT", "ACTIVE", "THREADS"}
 	rows := make([][]string, len(shown))
 	for i, s := range shown {
 		threadsCell := "-"
@@ -255,12 +197,11 @@ func displaySessions(sessions []model.Session, total int, limit int, jsonMode bo
 			s.User.Name,
 			s.Context,
 			strconv.FormatBool(s.Active),
-			formatLastActivity(s.LastActivity, now),
 			threadsCell,
 		}
 	}
 	output.PrintTable(headers, rows)
-	output.PrintSummary(len(shown), total, "--user, --inactive-for to filter or --all")
+	output.PrintSummary(len(shown), total, "--user to filter or --all")
 }
 
 func runSessionsClose(cmd *cobra.Command, args []string) error {
@@ -274,9 +215,19 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 
 	jsonMode := isJSONOutput(cfg)
 
-	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+	idNum, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
 		output.PrintError(fmt.Sprintf("Invalid session ID %q (must be numeric).", id), jsonMode)
 		return errSilent
+	}
+
+	if sessionsCloseDryRun {
+		if jsonMode {
+			output.PrintJSON(map[string]string{"status": "dry-run", "id": id})
+		} else {
+			fmt.Printf("[dry-run] Would close session '%s'.\n", id)
+		}
+		return nil
 	}
 
 	cl, err := createClient(cfg)
@@ -286,7 +237,7 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 	}
 
 	if !sessionsCloseYes {
-		isSelfClose, selfErr := detectSelfClose(cl, id)
+		isSelfClose, selfErr := detectSelfClose(cl, idNum)
 		if selfErr != nil {
 			output.PrintWarning("could not verify whether this is your active session — proceeding")
 			if flagVerbose {
@@ -299,15 +250,6 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 		}
-	}
-
-	if sessionsCloseDryRun {
-		if jsonMode {
-			output.PrintJSON(map[string]string{"status": "dry-run", "id": id})
-		} else {
-			fmt.Printf("[dry-run] Would close session '%s'.\n", id)
-		}
-		return nil
 	}
 
 	// Unquoted numeric key per OData URL conventions; id was validated as
@@ -331,9 +273,9 @@ func runSessionsClose(cmd *cobra.Command, args []string) error {
 }
 
 // detectSelfClose looks up the current authenticated session via
-// /ActiveSession and reports whether its ID equals target. Errors are
-// returned to the caller, which treats them as best-effort (no warning).
-func detectSelfClose(cl *client.Client, target string) (bool, error) {
+// /ActiveSession and reports whether its ID equals target. Comparison is
+// numeric so leading-zero variants (e.g. "00123" vs "123") match.
+func detectSelfClose(cl *client.Client, target uint64) (bool, error) {
 	data, err := cl.Get("ActiveSession?$select=ID")
 	if err != nil {
 		return false, err
@@ -342,7 +284,7 @@ func detectSelfClose(cl *client.Client, target string) (bool, error) {
 	if err := json.Unmarshal(data, &ref); err != nil {
 		return false, fmt.Errorf("cannot parse ActiveSession response")
 	}
-	return strconv.FormatInt(ref.ID, 10) == target, nil
+	return ref.ID >= 0 && uint64(ref.ID) == target, nil
 }
 
 func init() {
@@ -351,7 +293,6 @@ func init() {
 	sessionsCmd.AddCommand(sessionsCloseCmd)
 
 	sessionsListCmd.Flags().StringVar(&sessionsUser, "user", "", "Filter by user name (case-insensitive, partial match)")
-	sessionsListCmd.Flags().StringVar(&sessionsInactiveFor, "inactive-for", "", "Only show sessions inactive for at least this duration (e.g. 30m, 1h)")
 	sessionsListCmd.Flags().IntVar(&sessionsLimit, "limit", 0, "Max results to show (default from settings)")
 	sessionsListCmd.Flags().BoolVar(&sessionsAll, "all", false, "Show all results, no limit")
 

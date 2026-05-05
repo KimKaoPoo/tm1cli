@@ -1,13 +1,16 @@
 package model
 
 // Session represents an active session on the TM1 server.
+//
+// Fields match the tm1.Session OData entity: ID/Context/Active are direct
+// properties; User and Threads are navigation properties exposed via
+// $expand. (TM1 does NOT expose a LastActivity property on Session.)
 type Session struct {
-	ID           int64           `json:"ID"`
-	Context      string          `json:"Context"`
-	Active       bool            `json:"Active"`
-	LastActivity string          `json:"LastActivity"`
-	User         SessionUser     `json:"User"`
-	Threads      []SessionThread `json:"Threads"`
+	ID      int64           `json:"ID"`
+	Context string          `json:"Context"`
+	Active  bool            `json:"Active"`
+	User    SessionUser     `json:"User"`
+	Threads []SessionThread `json:"Threads"`
 }
 
 // SessionUser is the expanded User navigation property on a Session.

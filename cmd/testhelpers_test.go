@@ -246,7 +246,6 @@ func zeroAllFlags() {
 	logsAuditTail = 0
 	logsAuditRaw = false
 	sessionsUser = ""
-	sessionsInactiveFor = ""
 	sessionsLimit = 0
 	sessionsAll = false
 	sessionsCloseYes = false
