@@ -508,10 +508,10 @@ func TestThreadsCancel_DryRun(t *testing.T) {
 	gets := 0
 	getPaths := []string{}
 	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
-		thread:    &model.Thread{ID: 123, Name: "Admin", State: "Run", Function: "GET", ElapsedTime: 5.0},
-		posts:     &posts,
-		gets:      &gets,
-		getPaths:  &getPaths,
+		thread:   &model.Thread{ID: 123, Name: "Admin", State: "Run", Function: "GET", ElapsedTime: 5.0},
+		posts:    &posts,
+		gets:     &gets,
+		getPaths: &getPaths,
 	}))
 
 	cap := captureAll(t, func() {
