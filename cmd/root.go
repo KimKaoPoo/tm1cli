@@ -15,6 +15,30 @@ import (
 // Execute() exits non-zero without cobra re-printing the message.
 var errSilent = errors.New("")
 
+// silentErrCoded carries a process exit code while signaling that the
+// message has already been printed to stderr. Use it instead of
+// errSilent when the command needs an exit code other than 1
+// (e.g. exit 3 for "not found").
+type silentErrCoded struct{ code int }
+
+func (e *silentErrCoded) Error() string { return "" }
+
+// errExit returns a silent error that exits the process with the given code.
+func errExit(code int) error { return &silentErrCoded{code: code} }
+
+// exitCodeForError returns the process exit code for err: 0 for nil,
+// the encoded code for *silentErrCoded (including wrapped), 1 otherwise.
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var coded *silentErrCoded
+	if errors.As(err, &coded) {
+		return coded.code
+	}
+	return 1
+}
+
 var (
 	Version     = "dev"
 	flagServer  string
@@ -41,7 +65,7 @@ Environment Variables:
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
 }
 

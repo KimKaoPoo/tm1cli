@@ -1,9 +1,32 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"tm1cli/internal/config"
 )
+
+func TestExitCodeForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil → 0", nil, 0},
+		{"plain error → 1", errors.New("boom"), 1},
+		{"errSilent → 1", errSilent, 1},
+		{"errExit(3) → 3", errExit(3), 3},
+		{"wrapped errExit(7) → 7", fmt.Errorf("wrap: %w", errExit(7)), 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCodeForError(tt.err); got != tt.want {
+				t.Errorf("exitCodeForError(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestGetOutputFormat(t *testing.T) {
 	tests := []struct {
