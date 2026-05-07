@@ -65,7 +65,7 @@ Exit codes:
 // odataKey escapes a TM1 entity name for OData URL keys: doubles single
 // quotes per the OData literal spec, then URL-path-escapes for transport.
 func odataKey(name string) string {
-	return url.PathEscape(strings.ReplaceAll(name, "'", "''"))
+	return url.PathEscape(odataEscape(name))
 }
 
 // formatChoreFrequency converts ISO 8601 duration strings (e.g. "P1D",
@@ -196,9 +196,10 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 
 	const base = "Chores?$select=Name,Active,StartTime,DSTSensitivity,Frequency&$expand=Tasks($select=Step)"
 
-	chores, err := fetchChores(cl, base, choresFilter, jsonMode)
+	chores, err := fetchChores(cl, base, choresFilter)
 	if err != nil {
-		return err
+		output.PrintError(err.Error(), jsonMode)
+		return errSilent
 	}
 
 	chores = filterChoresByActive(chores, choresActive, choresInactive)
@@ -207,20 +208,15 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 }
 
 // fetchChores tries server-side $filter first, falling back to client-side
-// filtering with a [warn] when the server rejects the filter.
-func fetchChores(cl *client.Client, base, filter string, jsonMode bool) ([]model.Chore, error) {
+// filtering with a [warn] when the server rejects the filter. Returns the raw
+// fetch error so the caller controls how it's reported.
+func fetchChores(cl *client.Client, base, filter string) ([]model.Chore, error) {
 	if filter == "" {
-		chores, err := getChores(cl, base)
-		if err != nil {
-			output.PrintError(err.Error(), jsonMode)
-			return nil, errSilent
-		}
-		return chores, nil
+		return getChores(cl, base)
 	}
 
-	safe := strings.ReplaceAll(filter, "'", "''")
 	v := url.Values{}
-	v.Set("$filter", fmt.Sprintf("contains(tolower(Name),tolower('%s'))", safe))
+	v.Set("$filter", fmt.Sprintf("contains(tolower(Name),tolower('%s'))", odataEscape(filter)))
 	if chores, err := getChores(cl, base+"&"+v.Encode()); err == nil {
 		return chores, nil
 	}
@@ -228,8 +224,7 @@ func fetchChores(cl *client.Client, base, filter string, jsonMode bool) ([]model
 	output.PrintWarning("Server-side filter not supported, filtering locally...")
 	chores, err := getChores(cl, base)
 	if err != nil {
-		output.PrintError(err.Error(), jsonMode)
-		return nil, errSilent
+		return nil, err
 	}
 	return filterChoresByName(chores, filter), nil
 }
