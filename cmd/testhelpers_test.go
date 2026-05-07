@@ -252,6 +252,10 @@ func zeroAllFlags() {
 	sessionsAll = false
 	sessionsCloseYes = false
 	sessionsCloseDryRun = false
+	saveDataYes = false
+	saveDataDryRun = false
+	saveDataWait = false
+	saveDataTimeout = defaultSaveDataTimeout
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.

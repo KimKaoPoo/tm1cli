@@ -20,6 +20,13 @@ import (
 // ErrNotFound is returned when the TM1 server responds with HTTP 404.
 var ErrNotFound = errors.New("not found")
 
+// ErrTimeout is wrapped into the error returned when the underlying HTTP
+// request exceeds the client's configured timeout. Callers can detect it
+// with errors.Is for clean dispatch on long-running operations.
+var ErrTimeout = errors.New("timeout")
+
+const defaultTimeout = 30 * time.Second
+
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
@@ -29,6 +36,7 @@ type Client struct {
 	namespace  string
 	verbose    bool
 	stderr     io.Writer
+	timeout    time.Duration
 }
 
 func NewClient(server config.ServerConfig, password string, tlsVerify bool, verbose bool) (*Client, error) {
@@ -50,7 +58,7 @@ func NewClient(server config.ServerConfig, password string, tlsVerify bool, verb
 	httpClient := &http.Client{
 		Jar:       jar,
 		Transport: transport,
-		Timeout:   30 * time.Second,
+		Timeout:   defaultTimeout,
 	}
 
 	baseURL := strings.TrimRight(server.URL, "/")
@@ -67,7 +75,19 @@ func NewClient(server config.ServerConfig, password string, tlsVerify bool, verb
 		namespace:  server.Namespace,
 		verbose:    verbose,
 		stderr:     os.Stderr,
+		timeout:    defaultTimeout,
 	}, nil
+}
+
+// SetTimeout overrides the per-request HTTP timeout for subsequent calls.
+// Long-running operations (e.g. SaveDataAll) need a longer window than the
+// 30s default. Non-positive values are ignored.
+func (c *Client) SetTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.timeout = d
+	c.httpClient.Timeout = d
 }
 
 // SetStderr overrides stderr output (for testing).
@@ -177,7 +197,7 @@ func (c *Client) wrapError(err error) error {
 	errStr := err.Error()
 
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return fmt.Errorf("Request timed out after 30s.")
+		return fmt.Errorf("Request timed out after %s: %w", formatTimeout(c.timeout), ErrTimeout)
 	}
 	if strings.Contains(errStr, "connection refused") {
 		return fmt.Errorf("Cannot connect to %s. Is TM1 server running?", c.baseURL)
@@ -186,6 +206,22 @@ func (c *Client) wrapError(err error) error {
 		return fmt.Errorf("Cannot connect to %s. Is TM1 server running?", c.baseURL)
 	}
 	return fmt.Errorf("Connection error: %s", errStr)
+}
+
+// formatTimeout renders a duration the way the user would type it on the
+// CLI, falling back to time.Duration.String for sub-second or compound
+// values. Used to keep error messages and --timeout values in sync.
+func formatTimeout(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return d.String()
 }
 
 func (c *Client) httpError(status int, body []byte, endpoint string) error {
