@@ -872,14 +872,14 @@ func TestChoresShow_NoTasks(t *testing.T) {
 // ============================================================
 
 type choreToggleHandlerOpts struct {
-	chore       *model.Chore
-	getBody     []byte // overrides marshalled chore body when non-nil
-	getStatus   int
-	postStatus  int
-	posts       *int
-	gets        *int
-	postPaths   *[]string
-	getPaths    *[]string
+	chore      *model.Chore
+	getBody    []byte // overrides marshalled chore body when non-nil
+	getStatus  int
+	postStatus int
+	posts      *int
+	gets       *int
+	postPaths  *[]string
+	getPaths   *[]string
 }
 
 func newChoreToggleHandler(opts choreToggleHandlerOpts) http.HandlerFunc {
