@@ -215,11 +215,13 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 
 	const base = "Chores?$select=Name,Active,StartTime,DSTSensitive,Frequency&$expand=Tasks($select=Step)"
 
-	// $top is only safe to apply server-side when no client-side filters
-	// will further trim results — otherwise we may silently omit matches.
+	// Match cubes/dims: only --filter forces a full fetch (server-side
+	// $filter may not be honored, requiring client-side substring matching
+	// over the complete set). The +500 cushion absorbs --show-system /
+	// --active / --inactive client-side trimming so they don't silently lose
+	// matches at the truncation boundary.
 	fetchEndpoint := base
-	clientSideFilters := choresFilter != "" || !showSystem || choresActive || choresInactive
-	if limit > 0 && !clientSideFilters {
+	if limit > 0 && choresFilter == "" {
 		fetchEndpoint = fmt.Sprintf("%s&$top=%d", base, limit+500)
 	}
 

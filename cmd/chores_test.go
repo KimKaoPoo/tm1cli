@@ -784,22 +784,64 @@ func TestChoresList_AllDisablesLimit(t *testing.T) {
 	}
 }
 
-func TestChoresList_TopOmittedWhenClientFiltering(t *testing.T) {
+// TestChoresList_TopOmittedWithFilter verifies that --filter suppresses
+// server-side $top so the client has the complete set to substring-match
+// against (the server-side $filter may not be honored on every TM1 version).
+func TestChoresList_TopOmittedWithFilter(t *testing.T) {
 	resetCmdFlags(t)
-	var gotURL string
+	var gotURLs []string
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		gotURL = r.URL.RawQuery
+		gotURLs = append(gotURLs, r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(choresJSON(sampleChores()...))
 	})
 
 	captureAll(t, func() {
-		rootCmd.SetArgs([]string{"chores", "list", "--active"})
+		rootCmd.SetArgs([]string{"chores", "list", "--filter", "daily"})
 		rootCmd.Execute()
 	})
 
-	if strings.Contains(gotURL, "%24top=") {
-		t.Errorf("$top must not be sent when client-side filters are active: %s", gotURL)
+	for _, q := range gotURLs {
+		if strings.Contains(q, "$top=") {
+			t.Errorf("$top must not be sent when --filter is active: %s", q)
+		}
+	}
+}
+
+// TestChoresList_TopSentByDefault verifies the default invocation honors
+// the 50-row limit by sending $top=N+500 server-side, matching the
+// cubes/dims convention so we don't fetch the full collection unnecessarily.
+// --show-system, --active, and --inactive must NOT suppress $top because
+// the +500 cushion absorbs their client-side trimming.
+func TestChoresList_TopSentByDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"plain default", []string{"chores", "list"}},
+		{"with --show-system", []string{"chores", "list", "--show-system"}},
+		{"with --active", []string{"chores", "list", "--active"}},
+		{"with --inactive", []string{"chores", "list", "--inactive"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetCmdFlags(t)
+			var gotURL string
+			setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+				gotURL = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(choresJSON(sampleChores()...))
+			})
+
+			captureAll(t, func() {
+				rootCmd.SetArgs(tc.args)
+				rootCmd.Execute()
+			})
+
+			if !strings.Contains(gotURL, "$top=") {
+				t.Errorf("expected $top in URL for %v, got: %s", tc.args, gotURL)
+			}
+		})
 	}
 }
 
