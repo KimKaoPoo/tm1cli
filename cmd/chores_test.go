@@ -551,9 +551,30 @@ func TestChoresShow_NotFound(t *testing.T) {
 	if !strings.Contains(cap.Stderr, "Missing") || !strings.Contains(cap.Stderr, "not found") {
 		t.Errorf("expected not-found error mentioning chore name, got: %s", cap.Stderr)
 	}
-	// We can't easily assert exit code 3 from inside the same process, but
-	// confirming errExit was returned is covered by exitCodeForError logic in
-	// root.go. The error path is exercised by the assertions above.
+}
+
+// TestChoresShow_NotFoundExitCode verifies the not-found path returns the
+// errExit(3) sentinel so the binary exits with code 3, as documented in the
+// command help. We invoke runChoresShow directly so we can inspect the
+// returned error rather than relying on rootCmd.Execute()'s os.Exit.
+func TestChoresShow_NotFoundExitCode(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":{"code":"NotFound"}}`))
+	})
+
+	var err error
+	captureAll(t, func() {
+		err = runChoresShow(choresShowCmd, []string{"Missing"})
+	})
+
+	if err == nil {
+		t.Fatal("expected non-nil error from runChoresShow on 404")
+	}
+	if got := exitCodeForError(err); got != 3 {
+		t.Errorf("exit code = %d, want 3", got)
+	}
 }
 
 func TestChoresShow_NotFoundJSON(t *testing.T) {

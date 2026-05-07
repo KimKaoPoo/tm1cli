@@ -187,8 +187,10 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	// Belt-and-suspenders: cobra's MarkFlagsMutuallyExclusive may not fire
-	// when RunE is invoked directly in tests, so guard at runtime too.
+	// --active and --inactive are mutually exclusive. We enforce this at
+	// runtime instead of cobra.MarkFlagsMutuallyExclusive because pflag.Changed
+	// leaks across rootCmd.Execute() calls in the test harness, which makes
+	// the cobra-side check trip on flags that were "set" in a prior test.
 	if choresActive && choresInactive {
 		output.PrintError("--active and --inactive are mutually exclusive.", jsonMode)
 		return errSilent
