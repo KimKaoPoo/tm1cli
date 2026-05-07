@@ -256,6 +256,9 @@ func zeroAllFlags() {
 	saveDataDryRun = false
 	saveDataWait = false
 	saveDataTimeout = defaultSaveDataTimeout
+	choresFilter = ""
+	choresActive = false
+	choresInactive = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -482,6 +485,24 @@ func sessionsJSON(sessions ...model.Session) []byte {
 // activeSessionJSON returns JSON for a TM1 ActiveSession response.
 func activeSessionJSON(id int64) []byte {
 	data, _ := json.Marshal(model.ActiveSessionRef{ID: id})
+	return data
+}
+
+// choresJSON returns JSON for a TM1 Chores collection response.
+func choresJSON(chores ...model.Chore) []byte {
+	resp := struct {
+		Value []model.Chore `json:"value"`
+	}{Value: chores}
+	if resp.Value == nil {
+		resp.Value = []model.Chore{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// choreDetailJSON returns JSON for a single TM1 Chore (show endpoint).
+func choreDetailJSON(chore model.Chore) []byte {
+	data, _ := json.Marshal(chore)
 	return data
 }
 
