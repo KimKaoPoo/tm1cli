@@ -95,10 +95,12 @@ func runServerSaveData(cmd *cobra.Command, args []string) error {
 	}
 	cl.SetTimeout(saveDataTimeout)
 
-	start := time.Now().UTC()
+	// Use monotonic time for elapsed (NTP/clock-jump safe); UTC times are for display.
+	startMono := time.Now()
+	start := startMono.UTC()
 	_, err = cl.Post("SaveDataAll", nil)
-	end := time.Now().UTC()
-	elapsed := end.Sub(start)
+	elapsed := time.Since(startMono)
+	end := startMono.Add(elapsed).UTC()
 
 	if err != nil {
 		switch {
