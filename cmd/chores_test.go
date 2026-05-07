@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -673,6 +674,136 @@ func TestChoresShow_TasksSortedByStep(t *testing.T) {
 	}
 	if got.Tasks[0].Step != 1 || got.Tasks[1].Step != 2 || got.Tasks[2].Step != 3 {
 		t.Errorf("JSON tasks not sorted: %+v", got.Tasks)
+	}
+}
+
+// --- Unit: filterSystemChores ---
+
+func TestFilterSystemChores(t *testing.T) {
+	chores := []model.Chore{
+		{Name: "DailyLoad"},
+		{Name: "}StatsRefresh"},
+		{Name: "WeeklyReport"},
+	}
+	got := filterSystemChores(chores, false)
+	if len(got) != 2 || got[0].Name != "DailyLoad" || got[1].Name != "WeeklyReport" {
+		t.Errorf("system chore not filtered: %+v", got)
+	}
+	gotAll := filterSystemChores(chores, true)
+	if len(gotAll) != 3 {
+		t.Errorf("expected all chores when showSystem=true, got %d", len(gotAll))
+	}
+}
+
+// --- Integration: --show-system, --limit, --all ---
+
+func TestChoresList_HidesSystemByDefault(t *testing.T) {
+	resetCmdFlags(t)
+	chores := []model.Chore{
+		{Name: "DailyLoad", Active: true, Frequency: "P1D"},
+		{Name: "}StatsRefresh", Active: true, Frequency: "P1D"},
+	}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(choresJSON(chores...))
+	})
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"chores", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(out, "DailyLoad") {
+		t.Errorf("expected user chore in output: %s", out)
+	}
+	if strings.Contains(out, "}StatsRefresh") {
+		t.Errorf("system chore should be hidden by default: %s", out)
+	}
+}
+
+func TestChoresList_ShowSystemFlag(t *testing.T) {
+	resetCmdFlags(t)
+	chores := []model.Chore{
+		{Name: "DailyLoad", Active: true, Frequency: "P1D"},
+		{Name: "}StatsRefresh", Active: true, Frequency: "P1D"},
+	}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(choresJSON(chores...))
+	})
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"chores", "list", "--show-system"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(out, "}StatsRefresh") {
+		t.Errorf("--show-system should reveal system chores: %s", out)
+	}
+}
+
+func TestChoresList_DefaultLimitTruncates(t *testing.T) {
+	resetCmdFlags(t)
+	chores := make([]model.Chore, 55)
+	for i := range chores {
+		chores[i] = model.Chore{Name: fmt.Sprintf("Chore%02d", i), Active: true, Frequency: "P1D"}
+	}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(choresJSON(chores...))
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "list"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Showing 50 of 55") {
+		t.Errorf("expected truncation summary, got stderr: %s", cap.Stderr)
+	}
+}
+
+func TestChoresList_AllDisablesLimit(t *testing.T) {
+	resetCmdFlags(t)
+	chores := make([]model.Chore, 55)
+	for i := range chores {
+		chores[i] = model.Chore{Name: fmt.Sprintf("Chore%02d", i), Active: true, Frequency: "P1D"}
+	}
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(choresJSON(chores...))
+	})
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "list", "--all"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(cap.Stderr, "Showing 50 of 55") {
+		t.Errorf("--all should not truncate, got stderr: %s", cap.Stderr)
+	}
+	// 55 data rows + 1 header line, plus tabwriter padding lines.
+	if strings.Count(cap.Stdout, "\n") < 56 {
+		t.Errorf("expected at least 55 data rows in output, got %d lines", strings.Count(cap.Stdout, "\n"))
+	}
+}
+
+func TestChoresList_TopOmittedWhenClientFiltering(t *testing.T) {
+	resetCmdFlags(t)
+	var gotURL string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(choresJSON(sampleChores()...))
+	})
+
+	captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "list", "--active"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(gotURL, "%24top=") {
+		t.Errorf("$top must not be sent when client-side filters are active: %s", gotURL)
 	}
 }
 

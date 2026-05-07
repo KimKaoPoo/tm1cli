@@ -16,9 +16,12 @@ import (
 )
 
 var (
-	choresFilter   string
-	choresActive   bool
-	choresInactive bool
+	choresFilter     string
+	choresActive     bool
+	choresInactive   bool
+	choresLimit      int
+	choresAll        bool
+	choresShowSystem bool
 )
 
 var choresCmd = &cobra.Command{
@@ -34,11 +37,16 @@ var choresListCmd = &cobra.Command{
 
 REST API: GET /Chores
 
+System chores (names starting with }) are hidden by default. Results are
+limited to 50 by default; use --all to show everything.
+
 Frequency is rendered human-readable in table mode (e.g. "Every 1 day"); JSON
 mode preserves the raw ISO 8601 duration so it remains machine-readable.`,
 	Example: `  tm1cli chores list
   tm1cli chores list --active
   tm1cli chores list --filter "load"
+  tm1cli chores list --all
+  tm1cli chores list --show-system
   tm1cli chores list --output json`,
 	RunE: runChoresList,
 }
@@ -196,17 +204,42 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
+	showSystem := getShowSystem(cfg, choresShowSystem)
+	limit := getLimit(cfg, choresLimit, choresAll)
+
 	const base = "Chores?$select=Name,Active,StartTime,DSTSensitivity,Frequency&$expand=Tasks($select=Step)"
 
-	chores, err := fetchChores(cl, base, choresFilter)
+	// $top is only safe to apply server-side when no client-side filters
+	// will further trim results — otherwise we may silently omit matches.
+	fetchEndpoint := base
+	clientSideFilters := choresFilter != "" || !showSystem || choresActive || choresInactive
+	if limit > 0 && !clientSideFilters {
+		fetchEndpoint = fmt.Sprintf("%s&$top=%d", base, limit+500)
+	}
+
+	chores, err := fetchChores(cl, fetchEndpoint, choresFilter)
 	if err != nil {
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
 	}
 
+	chores = filterSystemChores(chores, showSystem)
 	chores = filterChoresByActive(chores, choresActive, choresInactive)
-	displayChores(chores, jsonMode)
+	displayChores(chores, limit, jsonMode)
 	return nil
+}
+
+func filterSystemChores(chores []model.Chore, showSystem bool) []model.Chore {
+	if showSystem {
+		return chores
+	}
+	var out []model.Chore
+	for _, c := range chores {
+		if !strings.HasPrefix(c.Name, "}") {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // fetchChores tries server-side $filter first, falling back to client-side
@@ -269,17 +302,23 @@ func filterChoresByActive(chores []model.Chore, active, inactive bool) []model.C
 	return out
 }
 
-func displayChores(chores []model.Chore, jsonMode bool) {
+func displayChores(chores []model.Chore, limit int, jsonMode bool) {
+	total := len(chores)
+	shown := chores
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+
 	if jsonMode {
-		if chores == nil {
-			chores = []model.Chore{}
+		if shown == nil {
+			shown = []model.Chore{}
 		}
-		output.PrintJSON(chores)
+		output.PrintJSON(shown)
 		return
 	}
 	headers := []string{"NAME", "ACTIVE", "STARTTIME", "DSTSENSITIVITY", "FREQUENCY", "TASKS"}
-	rows := make([][]string, len(chores))
-	for i, c := range chores {
+	rows := make([][]string, len(shown))
+	for i, c := range shown {
 		rows[i] = []string{
 			c.Name,
 			strconv.FormatBool(c.Active),
@@ -290,6 +329,7 @@ func displayChores(chores []model.Chore, jsonMode bool) {
 		}
 	}
 	output.PrintTable(headers, rows)
+	output.PrintSummary(len(shown), total)
 }
 
 func runChoresShow(cmd *cobra.Command, args []string) error {
@@ -372,4 +412,7 @@ func init() {
 	choresListCmd.Flags().StringVar(&choresFilter, "filter", "", "Filter by name (case-insensitive, partial match)")
 	choresListCmd.Flags().BoolVar(&choresActive, "active", false, "Show only active chores")
 	choresListCmd.Flags().BoolVar(&choresInactive, "inactive", false, "Show only inactive chores")
+	choresListCmd.Flags().IntVar(&choresLimit, "limit", 0, "Max results to show (default from settings)")
+	choresListCmd.Flags().BoolVar(&choresAll, "all", false, "Show all results, no limit")
+	choresListCmd.Flags().BoolVar(&choresShowSystem, "show-system", false, "Include system chores (names starting with })")
 }

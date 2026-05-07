@@ -259,6 +259,9 @@ func zeroAllFlags() {
 	choresFilter = ""
 	choresActive = false
 	choresInactive = false
+	choresLimit = 0
+	choresAll = false
+	choresShowSystem = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
