@@ -194,6 +194,25 @@ tm1cli threads list --all                 # no 50-row limit
 tm1cli threads list --output json         # full 14-field JSON output
 ```
 
+### Chores
+
+```bash
+tm1cli chores list                        # list user chores (system chores hidden by default)
+tm1cli chores list --active               # only active chores
+tm1cli chores list --inactive             # only inactive chores
+tm1cli chores list --filter "load"        # filter by name (partial, case-insensitive)
+tm1cli chores list --show-system          # include system chores (names starting with })
+tm1cli chores list --all                  # no 50-row limit
+tm1cli chores list --output json          # raw chore objects (Frequency stays as ISO 8601)
+
+tm1cli chores show "DailyLoad"            # step-by-step task list with parameters
+tm1cli chores show "DailyLoad" --output json
+```
+
+`Frequency` is rendered human-readable in table mode (e.g. `P1DT0H0M0S` →
+`Every 1 day`); JSON preserves the raw ISO 8601 duration. `chores show`
+exits with code 3 when the named chore does not exist.
+
 ### Logs
 
 ```bash
