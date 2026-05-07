@@ -13,11 +13,11 @@ import (
 
 // saveDataHandlerOpts controls the per-test behavior of newSaveDataHandler.
 type saveDataHandlerOpts struct {
-	status        int           // status returned by POST /SaveDataAll (default 200)
-	delay         time.Duration // optional sleep before responding
-	postsCaptured *int32        // optional counter incremented on each POST hit
-	pathsCaptured *[]string     // optional capture of POST URL paths
-	bodiesCaptured *[][]byte    // optional capture of POST request bodies
+	status         int           // status returned by POST /SaveDataAll (default 200)
+	delay          time.Duration // optional sleep before responding
+	postsCaptured  *int32        // optional counter incremented on each POST hit
+	pathsCaptured  *[]string     // optional capture of POST URL paths
+	bodiesCaptured *[][]byte     // optional capture of POST request bodies
 }
 
 func newSaveDataHandler(opts saveDataHandlerOpts) http.HandlerFunc {

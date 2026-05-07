@@ -202,7 +202,6 @@ func (c *Client) wrapError(err error) error {
 	return fmt.Errorf("Connection error: %s", errStr)
 }
 
-
 func (c *Client) httpError(status int, body []byte, endpoint string) error {
 	switch status {
 	case 401:
