@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -289,5 +290,377 @@ func TestThreadsListFilterSkipsTop(t *testing.T) {
 
 	if strings.Contains(gotURL, "$top=") {
 		t.Errorf("$top must not be sent when --state filter is active (could silently omit matching threads), got: %s", gotURL)
+	}
+}
+
+// --- Integration: threads cancel ---
+
+// cancelHandlerOpts controls the per-test behavior of newCancelHandler.
+type cancelHandlerOpts struct {
+	thread       *model.Thread // body returned on GET when getStatus is 0/200
+	getStatus    int           // override GET status; 0 = 200 (or 404 if thread is nil)
+	cancelStatus int           // POST status; 0 = 200
+	posts        *int
+	gets         *int
+	postPaths    *[]string
+	getPaths     *[]string
+}
+
+func newCancelHandler(opts cancelHandlerOpts) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Threads("):
+			if opts.gets != nil {
+				*opts.gets++
+			}
+			if opts.getPaths != nil {
+				*opts.getPaths = append(*opts.getPaths, r.URL.Path)
+			}
+			status := opts.getStatus
+			if status == 0 {
+				if opts.thread == nil {
+					status = http.StatusNotFound
+				} else {
+					status = http.StatusOK
+				}
+			}
+			if status >= 400 {
+				w.WriteHeader(status)
+				w.Write([]byte(`{"error":"failed"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			body, _ := json.Marshal(opts.thread)
+			w.Write(body)
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "tm1.CancelOperation"):
+			if opts.posts != nil {
+				*opts.posts++
+			}
+			if opts.postPaths != nil {
+				*opts.postPaths = append(*opts.postPaths, r.URL.Path)
+			}
+			status := opts.cancelStatus
+			if status == 0 {
+				status = http.StatusOK
+			}
+			w.WriteHeader(status)
+			if status == http.StatusNoContent {
+				return
+			}
+			if status >= 400 {
+				w.Write([]byte(`{"error":"failed"}`))
+				return
+			}
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"unexpected route"}`))
+		}
+	}
+}
+
+func TestThreadsCancel_Success(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	paths := []string{}
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		posts:     &posts,
+		postPaths: &paths,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected 1 POST, got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "Cancelled thread '123'") {
+		t.Errorf("expected success message in stdout, got: %s", cap.Stdout)
+	}
+	if len(paths) != 1 || !strings.Contains(paths[0], "Threads('123')/tm1.CancelOperation") {
+		t.Errorf("expected POST to Threads('123')/tm1.CancelOperation, got: %v", paths)
+	}
+}
+
+func TestThreadsCancel_204NoContent(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		cancelStatus: http.StatusNoContent,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stdout, "Cancelled thread '123'") {
+		t.Errorf("expected success on 204, got: %s", cap.Stdout)
+	}
+}
+
+func TestThreadsCancel_NotFoundExitCode(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		cancelStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "9999", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Thread '9999' not found") {
+		t.Errorf("expected 'not found' on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) {
+		t.Fatalf("expected *silentErrCoded, got: %T %v", execErr, execErr)
+	}
+	if coded.code != 3 {
+		t.Errorf("expected exit code 3, got %d", coded.code)
+	}
+}
+
+func TestThreadsCancel_PermissionDenied(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		cancelStatus: http.StatusForbidden,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Permission denied") {
+		t.Errorf("expected permission-denied message on stderr, got: %s", cap.Stderr)
+	}
+	// Should be plain errSilent (exit 1), NOT a coded exit.
+	var coded *silentErrCoded
+	if errors.As(execErr, &coded) {
+		t.Errorf("403 should map to errSilent (exit 1), got coded exit %d", coded.code)
+	}
+}
+
+func TestThreadsCancel_YesBypassesPrompt(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{posts: &posts}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected 1 POST, got %d", posts)
+	}
+	if strings.Contains(cap.Stderr, "(y/N)") {
+		t.Errorf("--yes should suppress prompt, but prompt text appeared: %s", cap.Stderr)
+	}
+}
+
+func TestThreadsCancel_PromptDecline(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{posts: &posts}))
+	injectStdin(t, "n\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected no POST when user declines, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "aborts in-flight work") {
+		t.Errorf("expected in-flight-work warning, got: %s", cap.Stderr)
+	}
+}
+
+func TestThreadsCancel_PromptAccept(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{posts: &posts}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected POST after accept, got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "Cancelled thread '123'") {
+		t.Errorf("expected success message, got: %s", cap.Stdout)
+	}
+}
+
+func TestThreadsCancel_DryRun(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	gets := 0
+	getPaths := []string{}
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		thread:   &model.Thread{ID: 123, Name: "Admin", State: "Run", Function: "GET", ElapsedTime: 5.0},
+		posts:    &posts,
+		gets:     &gets,
+		getPaths: &getPaths,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--dry-run"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("dry-run must not POST, got %d POSTs", posts)
+	}
+	if gets != 1 {
+		t.Errorf("expected 1 GET for thread lookup, got %d", gets)
+	}
+	if len(getPaths) != 1 || !strings.Contains(getPaths[0], "Threads('123')") {
+		t.Errorf("expected GET to Threads('123'), got: %v", getPaths)
+	}
+	if !strings.Contains(cap.Stdout, "[dry-run] Would cancel thread '123'") {
+		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+	if !strings.Contains(cap.Stdout, "name=Admin") {
+		t.Errorf("expected thread details in dry-run output, got: %s", cap.Stdout)
+	}
+}
+
+func TestThreadsCancel_DryRunYesStillNoPost(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		thread: &model.Thread{ID: 123, Name: "Admin", State: "Run"},
+		posts:  &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--dry-run", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("--dry-run must take precedence over --yes (no POST), got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "[dry-run]") {
+		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+}
+
+func TestThreadsCancel_DryRunNotFound(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		getStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "9999", "--dry-run"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Thread '9999' not found") {
+		t.Errorf("expected not-found error, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) || coded.code != 3 {
+		t.Errorf("expected exit code 3, got: %v", execErr)
+	}
+}
+
+func TestThreadsCancel_InvalidID(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	gets := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		posts: &posts,
+		gets:  &gets,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "abc", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 || gets != 0 {
+		t.Errorf("invalid ID must not trigger HTTP traffic, got %d POSTs / %d GETs", posts, gets)
+	}
+	if !strings.Contains(cap.Stderr, "Invalid thread ID") {
+		t.Errorf("expected validation error, got: %s", cap.Stderr)
+	}
+}
+
+func TestThreadsCancel_JSON_Success(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{}))
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--yes", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, out)
+	}
+	if result["status"] != "cancelled" || result["id"] != "123" {
+		t.Errorf("unexpected JSON result: %+v", result)
+	}
+}
+
+func TestThreadsCancel_JSON_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{
+		cancelStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "9999", "--yes", "--output", "json"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, `"error"`) || !strings.Contains(cap.Stderr, "Thread '9999' not found") {
+		t.Errorf("expected JSON-shaped error, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) || coded.code != 3 {
+		t.Errorf("expected exit code 3, got: %v", execErr)
+	}
+}
+
+func TestThreadsCancel_JSON_PromptDoesNotCorruptStdout(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newCancelHandler(cancelHandlerOpts{posts: &posts}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"threads", "cancel", "123", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(cap.Stdout, "(y/N)") || strings.Contains(cap.Stdout, "Continue") {
+		t.Errorf("prompt text leaked onto stdout (corrupts JSON consumers): %q", cap.Stdout)
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(cap.Stdout)), &result); err != nil {
+		t.Fatalf("stdout is not clean JSON: %v\nstdout: %q", err, cap.Stdout)
+	}
+	if result["status"] != "cancelled" || result["id"] != "123" {
+		t.Errorf("unexpected JSON: %+v", result)
+	}
+	if posts != 1 {
+		t.Errorf("expected POST after accept, got %d", posts)
 	}
 }

@@ -220,6 +220,8 @@ func zeroAllFlags() {
 	threadsMinElapsed = ""
 	threadsLimit = 0
 	threadsAll = false
+	threadsCancelYes = false
+	threadsCancelDryRun = false
 	logsMsgSince = ""
 	logsMsgLevel = ""
 	logsMsgUser = ""
