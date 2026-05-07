@@ -22,9 +22,6 @@ var (
 
 const defaultSaveDataTimeout = 5 * time.Minute
 
-// SaveDataResult is the structured output emitted by `server save-data`.
-// Timestamps are stored as time.Time so the JSON encoder renders them as
-// RFC3339; the table renderer formats them on its own.
 type SaveDataResult struct {
 	Status    string    `json:"status"`
 	Start     time.Time `json:"start"`
@@ -84,9 +81,7 @@ func runServerSaveData(cmd *cobra.Command, args []string) error {
 	}
 
 	if !saveDataYes {
-		// Prompt always goes to stderr so JSON consumers keep stdout clean;
-		// if stdin is closed (script context with no --yes), promptYesNo
-		// returns false on EOF and we exit without making any HTTP calls.
+		// promptYesNo returns false on EOF, so a closed stdin (script with no --yes) declines safely.
 		fmt.Fprintln(os.Stderr, "SaveDataAll will briefly pause user activity on the TM1 server while data is flushed to disk.")
 		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
 			return nil
@@ -117,8 +112,7 @@ func runServerSaveData(cmd *cobra.Command, args []string) error {
 		case strings.HasPrefix(err.Error(), "HTTP 403"):
 			output.PrintError("Permission denied. SaveDataAll requires admin privileges.", jsonMode)
 		default:
-			// 401 falls through here so the existing "Authentication failed"
-			// message bubbles up unchanged.
+			// 401 lands here so the existing "Authentication failed" message bubbles up unchanged.
 			output.PrintError(err.Error(), jsonMode)
 		}
 		return errSilent

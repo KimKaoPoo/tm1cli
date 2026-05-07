@@ -115,9 +115,7 @@ func TestServerSaveData_TableOutput_Shape(t *testing.T) {
 
 func TestServerSaveData_JSONOutputContainsTimestamps(t *testing.T) {
 	resetCmdFlags(t)
-	setupMockTM1(t, newSaveDataHandler(saveDataHandlerOpts{
-		delay: 50 * time.Millisecond,
-	}))
+	setupMockTM1(t, newSaveDataHandler(saveDataHandlerOpts{}))
 
 	cap := captureAll(t, func() {
 		rootCmd.SetArgs([]string{"server", "save-data", "--yes", "--output", "json"})

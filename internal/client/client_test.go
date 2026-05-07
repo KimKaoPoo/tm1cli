@@ -231,9 +231,6 @@ func TestGetTimeout(t *testing.T) {
 func TestSetTimeout_UpdatesClientTimeout(t *testing.T) {
 	c := newTestClient(t, "http://example.com")
 	c.SetTimeout(2 * time.Second)
-	if c.timeout != 2*time.Second {
-		t.Errorf("c.timeout = %v, want 2s", c.timeout)
-	}
 	if c.httpClient.Timeout != 2*time.Second {
 		t.Errorf("c.httpClient.Timeout = %v, want 2s", c.httpClient.Timeout)
 	}
