@@ -213,7 +213,7 @@ func runChoresList(cmd *cobra.Command, args []string) error {
 	showSystem := getShowSystem(cfg, choresShowSystem)
 	limit := getLimit(cfg, choresLimit, choresAll)
 
-	const base = "Chores?$select=Name,Active,StartTime,DSTSensitivity,Frequency&$expand=Tasks($select=Step)"
+	const base = "Chores?$select=Name,Active,StartTime,DSTSensitive,Frequency&$expand=Tasks($select=Step)"
 
 	// $top is only safe to apply server-side when no client-side filters
 	// will further trim results — otherwise we may silently omit matches.
@@ -322,14 +322,14 @@ func displayChores(chores []model.Chore, limit int, jsonMode bool) {
 		output.PrintJSON(shown)
 		return
 	}
-	headers := []string{"NAME", "ACTIVE", "STARTTIME", "DSTSENSITIVITY", "FREQUENCY", "TASKS"}
+	headers := []string{"NAME", "ACTIVE", "STARTTIME", "DSTSENSITIVE", "FREQUENCY", "TASKS"}
 	rows := make([][]string, len(shown))
 	for i, c := range shown {
 		rows[i] = []string{
 			c.Name,
 			strconv.FormatBool(c.Active),
 			c.StartTime,
-			strconv.FormatBool(c.DSTSensitivity),
+			strconv.FormatBool(c.DSTSensitive),
 			formatChoreFrequency(c.Frequency),
 			strconv.Itoa(len(c.Tasks)),
 		}
@@ -382,7 +382,7 @@ func runChoresShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Name:           %s\n", chore.Name)
 	fmt.Printf("Active:         %s\n", strconv.FormatBool(chore.Active))
 	fmt.Printf("StartTime:      %s\n", chore.StartTime)
-	fmt.Printf("DSTSensitivity: %s\n", strconv.FormatBool(chore.DSTSensitivity))
+	fmt.Printf("DSTSensitive:   %s\n", strconv.FormatBool(chore.DSTSensitive))
 	fmt.Printf("Frequency:      %s\n", formatChoreFrequency(chore.Frequency))
 	fmt.Println()
 

@@ -4,7 +4,7 @@ type Chore struct {
 	Name           string      `json:"Name"`
 	Active         bool        `json:"Active"`
 	StartTime      string      `json:"StartTime"`
-	DSTSensitivity bool        `json:"DSTSensitivity"`
+	DSTSensitive   bool        `json:"DSTSensitive"`
 	Frequency      string      `json:"Frequency"`
 	Tasks          []ChoreTask `json:"Tasks,omitempty"`
 }

@@ -183,12 +183,12 @@ func sampleChores() []model.Chore {
 	return []model.Chore{
 		{
 			Name: "DailyLoad", Active: true, StartTime: "2025-01-01T08:00:00",
-			DSTSensitivity: false, Frequency: "P1DT0H0M0S",
+			DSTSensitive: false, Frequency: "P1DT0H0M0S",
 			Tasks: []model.ChoreTask{{Step: 0}, {Step: 1}},
 		},
 		{
 			Name: "WeeklyReport", Active: false, StartTime: "2025-01-01T09:00:00",
-			DSTSensitivity: true, Frequency: "P7DT0H0M0S",
+			DSTSensitive: true, Frequency: "P7DT0H0M0S",
 			Tasks: []model.ChoreTask{{Step: 0}},
 		},
 	}
@@ -465,7 +465,7 @@ func TestChoresList_MalformedJSON(t *testing.T) {
 func sampleChoreDetail() model.Chore {
 	return model.Chore{
 		Name: "DailyLoad", Active: true, StartTime: "2025-01-01T08:00:00",
-		DSTSensitivity: false, Frequency: "P1DT0H0M0S",
+		DSTSensitive: false, Frequency: "P1DT0H0M0S",
 		Tasks: []model.ChoreTask{
 			{
 				Step:    0,
@@ -499,7 +499,7 @@ func TestChoresShow_Table(t *testing.T) {
 		"Name:           DailyLoad",
 		"Active:         true",
 		"StartTime:      2025-01-01T08:00:00",
-		"DSTSensitivity: false",
+		"DSTSensitive:   false",
 		"Frequency:      Every 1 day",
 		"STEP", "PROCESS", "PARAMETERS",
 		"LoadSales", "pYear=2024", "RunReport", "(none)",
