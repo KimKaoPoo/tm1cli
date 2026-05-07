@@ -590,21 +590,17 @@ func TestChoresShow_NotFoundJSON(t *testing.T) {
 		rootCmd.Execute()
 	})
 
-	// Cobra appends Usage info after RunE returns a non-nil error, so we
-	// extract the JSON portion (everything up to the first "}" that closes
-	// the top-level object) and parse that. The error message contains
-	// "Missing", confirming the JSON renderer was used.
-	end := strings.Index(stderr, "}\n")
-	if end < 0 {
-		t.Fatalf("expected JSON object on stderr, got: %s", stderr)
-	}
-	jsonPart := stderr[:end+1]
+	// SilenceUsage on choresShowCmd ensures cobra does not append a Usage
+	// block after our JSON error, so the entire stderr is a single JSON object.
 	var obj map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonPart), &obj); err != nil {
-		t.Fatalf("expected JSON error object, got: %s\nfull stderr: %s", jsonPart, stderr)
+	if err := json.Unmarshal([]byte(stderr), &obj); err != nil {
+		t.Fatalf("expected pure JSON error object on stderr, got: %s", stderr)
 	}
 	if _, ok := obj["error"]; !ok {
 		t.Errorf("expected 'error' key in JSON object, got: %v", obj)
+	}
+	if strings.Contains(stderr, "Usage:") {
+		t.Errorf("stderr must not contain cobra Usage block in --output json mode, got: %s", stderr)
 	}
 }
 

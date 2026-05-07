@@ -33,6 +33,9 @@ var choresCmd = &cobra.Command{
 var choresListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all chores",
+	// Suppress cobra's auto-appended usage block on RunE errors so stderr in
+	// --output json mode stays a single, parseable JSON object.
+	SilenceUsage: true,
 	Long: `List all chores on the TM1 server.
 
 REST API: GET /Chores
@@ -54,6 +57,9 @@ mode preserves the raw ISO 8601 duration so it remains machine-readable.`,
 var choresShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show a chore's task list",
+	// Suppress cobra's auto-appended usage block on RunE errors so stderr in
+	// --output json mode stays a single, parseable JSON object.
+	SilenceUsage: true,
 	Long: `Show the step-by-step task list for a chore: each step's process and parameters.
 
 REST API: GET /Chores('name')?$expand=Tasks($expand=Process,Parameters)
