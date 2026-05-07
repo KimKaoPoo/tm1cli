@@ -481,15 +481,11 @@ func runChoresDeactivate(cmd *cobra.Command, args []string) error {
 }
 
 // choreEndpoint formats a Chores-collection endpoint with the chore name
-// OData- and URL-escaped. An empty suffix yields the bare entity URL; a
-// suffix that starts with '?' is appended directly (query string); any
-// other suffix is treated as an action segment and joined with '/'.
+// OData- and URL-escaped. Mirrors threadEndpoint: empty suffix yields the
+// bare entity URL, otherwise the suffix is joined as an action segment.
 func choreEndpoint(name, suffix string) string {
 	if suffix == "" {
 		return fmt.Sprintf("Chores('%s')", odataKey(name))
-	}
-	if strings.HasPrefix(suffix, "?") {
-		return fmt.Sprintf("Chores('%s')%s", odataKey(name), suffix)
 	}
 	return fmt.Sprintf("Chores('%s')/%s", odataKey(name), suffix)
 }
@@ -513,10 +509,7 @@ func runChoresToggle(name string, target, yes, dryRun bool) error {
 		return errSilent
 	}
 
-	action := "activate"
-	if !target {
-		action = "deactivate"
-	}
+	labels := choreToggleLabels(target)
 
 	chore, err := fetchChoreActive(cl, name)
 	if err != nil {
@@ -524,19 +517,15 @@ func runChoresToggle(name string, target, yes, dryRun bool) error {
 	}
 
 	if chore.Active == target {
-		state := "inactive"
-		if target {
-			state = "active"
-		}
 		if jsonMode {
 			output.PrintJSON(map[string]string{
 				"status":  "noop",
 				"chore":   name,
 				"active":  strconv.FormatBool(chore.Active),
-				"message": fmt.Sprintf("Chore '%s' is already %s.", name, state),
+				"message": fmt.Sprintf("Chore '%s' is already %s.", name, labels.state),
 			})
 		} else {
-			fmt.Printf("Chore '%s' is already %s. No change.\n", name, state)
+			fmt.Printf("Chore '%s' is already %s. No change.\n", name, labels.state)
 		}
 		return nil
 	}
@@ -546,49 +535,51 @@ func runChoresToggle(name string, target, yes, dryRun bool) error {
 			output.PrintJSON(map[string]string{
 				"status": "dry-run",
 				"chore":  name,
-				"action": action,
+				"action": labels.verb,
 			})
 		} else {
-			fmt.Printf("[dry-run] Would %s chore '%s'.\n", action, name)
+			fmt.Printf("[dry-run] Would %s chore '%s'.\n", labels.verb, name)
 		}
 		return nil
 	}
 
 	if !yes {
-		fmt.Fprintf(os.Stderr, "About to %s chore '%s'.\n", action, name)
+		fmt.Fprintf(os.Stderr, "About to %s chore '%s'.\n", labels.verb, name)
 		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
 			return nil
 		}
 	}
 
-	op := "tm1.Activate"
-	if !target {
-		op = "tm1.Deactivate"
-	}
-	if _, err := cl.Post(choreEndpoint(name, op), map[string]interface{}{}); err != nil {
+	if _, err := cl.Post(choreEndpoint(name, labels.op), map[string]interface{}{}); err != nil {
 		return handleChoreToggleError(err, name, jsonMode)
 	}
 
-	pastTense := "activated"
-	if !target {
-		pastTense = "deactivated"
-	}
 	if jsonMode {
 		output.PrintJSON(map[string]string{
-			"status": pastTense,
+			"status": labels.past,
 			"chore":  name,
 		})
 	} else {
-		fmt.Printf("Chore '%s' %s.\n", name, pastTense)
+		fmt.Printf("Chore '%s' %s.\n", name, labels.past)
 	}
 	return nil
+}
+
+// choreToggleLabels returns the action vocabulary for a toggle direction:
+// the verb ("activate"), the OData operation segment ("tm1.Activate"), the
+// past-tense status ("activated"), and the post-toggle state name ("active").
+func choreToggleLabels(target bool) struct{ verb, op, past, state string } {
+	if target {
+		return struct{ verb, op, past, state string }{"activate", "tm1.Activate", "activated", "active"}
+	}
+	return struct{ verb, op, past, state string }{"deactivate", "tm1.Deactivate", "deactivated", "inactive"}
 }
 
 // fetchChoreActive issues GET Chores('name')?$select=Name,Active and returns
 // a populated Chore. It probes Active via *bool so a missing field surfaces
 // as an explicit error rather than silently defaulting to false.
 func fetchChoreActive(cl *client.Client, name string) (*model.Chore, error) {
-	data, err := cl.Get(choreEndpoint(name, "?$select=Name,Active"))
+	data, err := cl.Get(choreEndpoint(name, "") + "?$select=Name,Active")
 	if err != nil {
 		return nil, err
 	}
