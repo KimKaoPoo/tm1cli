@@ -20,6 +20,11 @@ import (
 // ErrNotFound is returned when the TM1 server responds with HTTP 404.
 var ErrNotFound = errors.New("not found")
 
+// ErrTimeout is wrapped into timeout errors so callers can dispatch with errors.Is.
+var ErrTimeout = errors.New("timeout")
+
+const defaultTimeout = 30 * time.Second
+
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
@@ -50,7 +55,7 @@ func NewClient(server config.ServerConfig, password string, tlsVerify bool, verb
 	httpClient := &http.Client{
 		Jar:       jar,
 		Transport: transport,
-		Timeout:   30 * time.Second,
+		Timeout:   defaultTimeout,
 	}
 
 	baseURL := strings.TrimRight(server.URL, "/")
@@ -68,6 +73,15 @@ func NewClient(server config.ServerConfig, password string, tlsVerify bool, verb
 		verbose:    verbose,
 		stderr:     os.Stderr,
 	}, nil
+}
+
+// SetTimeout overrides the per-request HTTP timeout. Non-positive values are
+// ignored. Long-running operations (e.g. SaveDataAll) extend past the 30s default.
+func (c *Client) SetTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.httpClient.Timeout = d
 }
 
 // SetStderr overrides stderr output (for testing).
@@ -177,7 +191,7 @@ func (c *Client) wrapError(err error) error {
 	errStr := err.Error()
 
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return fmt.Errorf("Request timed out after 30s.")
+		return fmt.Errorf("Request timed out after %s: %w", c.httpClient.Timeout, ErrTimeout)
 	}
 	if strings.Contains(errStr, "connection refused") {
 		return fmt.Errorf("Cannot connect to %s. Is TM1 server running?", c.baseURL)

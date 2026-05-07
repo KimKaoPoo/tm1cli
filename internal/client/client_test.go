@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -224,6 +225,66 @@ func TestGetTimeout(t *testing.T) {
 	}
 	if !strings.Contains(getErr.Error(), "timed out") {
 		t.Errorf("error = %q, want it to contain 'timed out'", getErr.Error())
+	}
+}
+
+func TestSetTimeout_UpdatesClientTimeout(t *testing.T) {
+	c := newTestClient(t, "http://example.com")
+	c.SetTimeout(2 * time.Second)
+	if c.httpClient.Timeout != 2*time.Second {
+		t.Errorf("c.httpClient.Timeout = %v, want 2s", c.httpClient.Timeout)
+	}
+}
+
+func TestSetTimeout_IgnoresNonPositive(t *testing.T) {
+	c := newTestClient(t, "http://example.com")
+	original := c.httpClient.Timeout
+
+	c.SetTimeout(0)
+	if c.httpClient.Timeout != original {
+		t.Errorf("SetTimeout(0) changed timeout to %v, want unchanged %v", c.httpClient.Timeout, original)
+	}
+	c.SetTimeout(-time.Second)
+	if c.httpClient.Timeout != original {
+		t.Errorf("SetTimeout(-1s) changed timeout to %v, want unchanged %v", c.httpClient.Timeout, original)
+	}
+}
+
+func TestTimeoutErrorReflectsConfiguredTimeout(t *testing.T) {
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	c.SetTimeout(50 * time.Millisecond)
+
+	_, err := c.Get("Cubes")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out after 50ms") {
+		t.Errorf("error = %q, want it to contain 'timed out after 50ms'", err.Error())
+	}
+}
+
+func TestTimeoutErrorIsErrTimeout(t *testing.T) {
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	c.SetTimeout(50 * time.Millisecond)
+
+	_, err := c.Get("Cubes")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("errors.Is(err, ErrTimeout) = false, want true (err = %v)", err)
 	}
 }
 
