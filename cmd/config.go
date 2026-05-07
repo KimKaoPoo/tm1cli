@@ -127,6 +127,10 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 		namespace, _ = reader.ReadString('\n')
 		namespace = strings.TrimSpace(namespace)
 	}
+	if authMode == "cam" && namespace == "" {
+		fmt.Fprintln(os.Stderr, "Error: CAM namespace is required. Use --namespace or enter it at the prompt.")
+		return errSilent
+	}
 
 	// Username
 	user := addFlagUser
@@ -358,6 +362,10 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 		input = strings.TrimSpace(input)
 		if input != "" {
 			srv.Namespace = input
+		}
+		if srv.Namespace == "" {
+			fmt.Fprintln(os.Stderr, "Error: CAM namespace is required for cam auth.")
+			return errSilent
 		}
 	} else {
 		srv.Namespace = ""
@@ -629,7 +637,9 @@ func init() {
 // helpers
 
 func promptYesNo(reader *bufio.Reader, prompt string) bool {
-	fmt.Printf("%s (y/N) ", prompt)
+	// Write to stderr so callers using --output json keep stdout clean
+	// for machine consumers (the prompt is interactive UI, not data).
+	fmt.Fprintf(os.Stderr, "%s (y/N) ", prompt)
 	answer, _ := reader.ReadString('\n')
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "y" || answer == "yes"

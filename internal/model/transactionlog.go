@@ -1,0 +1,38 @@
+package model
+
+import "encoding/json"
+
+// TransactionLogEntry represents a single entry from GET /TransactionLogEntries.
+//
+// OldValue and NewValue are TM1 Edm.PrimitiveType — they may arrive as JSON
+// null, number, string, or bool — so they ride as json.RawMessage and are
+// formatted at render time. Modelling them as string would fail unmarshal
+// for non-string responses.
+//
+// ChangeSetID rides as json.RawMessage too: some TM1 versions emit it as
+// Edm.Int64 (numeric, set by TI processes / bulk ops), others as a string
+// UUID, others as null. Modelling it as string would fail to unmarshal
+// numeric forms and the whole response would bail with a parse error.
+//
+// ID is Edm.Int64; older TM1 versions may omit it (zero == absent).
+type TransactionLogEntry struct {
+	ID            int64           `json:"ID,omitempty"`
+	TimeStamp     string          `json:"TimeStamp"`
+	ChangeSetID   json.RawMessage `json:"ChangeSetID,omitempty"`
+	User          string          `json:"User"`
+	Cube          string          `json:"Cube"`
+	Tuple         []string        `json:"Tuple"`
+	OldValue      json.RawMessage `json:"OldValue"`
+	NewValue      json.RawMessage `json:"NewValue"`
+	StatusMessage string          `json:"StatusMessage,omitempty"`
+}
+
+// TransactionLogResponse is the OData collection wrapper.
+//
+// NextLink is set by TM1 when the response is paginated and more entries
+// are available beyond Value. Callers must surface this to the user (or
+// follow it) — silently dropping it leaves results incomplete.
+type TransactionLogResponse struct {
+	Value    []TransactionLogEntry `json:"value"`
+	NextLink string                `json:"@odata.nextLink,omitempty"`
+}

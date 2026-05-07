@@ -183,6 +183,64 @@ tm1cli process run "LoadData"              # run without params
 tm1cli process run "LoadData" --param pSource=file.csv --param pYear=2024
 ```
 
+### Threads
+
+```bash
+tm1cli threads list                       # list running threads
+tm1cli threads list --state Run           # filter by state (Idle|Run|Wait|CommitWait|Rollback)
+tm1cli threads list --user Admin          # filter by user (partial, case-insensitive)
+tm1cli threads list --min-elapsed 10s     # threads running longer than 10 seconds
+tm1cli threads list --all                 # no 50-row limit
+tm1cli threads list --output json         # full 14-field JSON output
+```
+
+### Logs
+
+```bash
+tm1cli logs messages                           # show last 100 message log entries (default)
+tm1cli logs messages --tail 50                 # show last 50 entries
+tm1cli logs messages --since 1h               # entries from the past hour
+tm1cli logs messages --since 2026-04-24T10:00 # absolute timestamp (local time when no offset)
+tm1cli logs messages --level error            # filter by level: info, warn, error, fatal, debug
+tm1cli logs messages --user admin             # filter by user (client-side, partial match)
+tm1cli logs messages --contains "load"        # filter by message substring (case-insensitive)
+tm1cli logs messages --follow                  # stream new entries kubectl-style (Ctrl+C to stop)
+tm1cli logs messages --follow --interval 10s  # custom poll interval
+tm1cli logs messages --raw                     # raw one-line-per-entry output
+tm1cli logs messages --output json            # JSON array output
+tm1cli logs messages --follow --output json   # NDJSON stream (one object per line)
+```
+
+```bash
+# Audit log (requires AuditLogOn=T in tm1s.cfg; see below)
+tm1cli logs audit                                            # show last 100 audit log entries
+tm1cli logs audit --tail 50                                  # show last 50 entries
+tm1cli logs audit --since 24h --object-type Cube             # cube events in the past 24 hours
+tm1cli logs audit --object-type Process --object-name ImportSales  # specific process events
+tm1cli logs audit --user admin --follow                      # stream new entries for a user
+tm1cli logs audit --since 2026-04-24T10:00 --until 2026-04-24T18:00 --raw  # time range, raw output
+tm1cli logs audit --output json                              # JSON array output
+tm1cli logs audit --follow --output json                     # NDJSON stream (one object per line)
+```
+
+**Prerequisite:** The TM1 server must have audit logging enabled (`AuditLogOn=T` in `tm1s.cfg`).
+When audit logging is disabled, the command exits with a clear error explaining how to enable it.
+
+**Note:** An empty result set may also indicate insufficient permission to read the audit log on
+this server.
+
+Levels use canonical TM1 names: `Info`, `Warning`, `Error`, `Fatal`, `Debug`, `Unknown`, `Off`.
+Aliases `warn` and `err` are also accepted.
+
+Server-side `$filter` is used for `--since` and `--level`. If the server rejects the filter
+(HTTP 400/501), tm1cli falls back to client-side filtering with a `[warn]` message.
+
+`--since` accepts a Go duration (`10m`, `2h`) or an absolute timestamp. Absolute
+timestamps without a timezone offset are interpreted in your **local** time
+zone (matching `journalctl --since`). Use RFC3339 with an explicit offset
+(e.g. `2026-04-24T10:00:00+08:00` or `2026-04-24T02:00:00Z`) when you need
+unambiguous UTC.
+
 ### Export
 
 ```bash

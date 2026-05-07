@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 	"tm1cli/internal/config"
 	"tm1cli/internal/model"
 
@@ -214,6 +215,47 @@ func zeroAllFlags() {
 	subsetsHierarchy = ""
 	watchInterval = "5s"
 	watchSeconds = 0
+	threadsUser = ""
+	threadsState = ""
+	threadsMinElapsed = ""
+	threadsLimit = 0
+	threadsAll = false
+	threadsCancelYes = false
+	threadsCancelDryRun = false
+	logsMsgSince = ""
+	logsMsgLevel = ""
+	logsMsgUser = ""
+	logsMsgContains = ""
+	logsMsgFollow = false
+	logsMsgInterval = 5 * time.Second
+	logsMsgTail = 0
+	logsMsgRaw = false
+	logsTxSince = ""
+	logsTxUntil = ""
+	logsTxCube = ""
+	logsTxUser = ""
+	logsTxFollow = false
+	logsTxInterval = 5 * time.Second
+	logsTxTail = 0
+	logsTxRaw = false
+	logsAuditSince = ""
+	logsAuditUntil = ""
+	logsAuditObjectType = ""
+	logsAuditObjectName = ""
+	logsAuditUser = ""
+	logsAuditFollow = false
+	logsAuditInterval = 5 * time.Second
+	logsAuditTail = 0
+	logsAuditRaw = false
+	sessionsUser = ""
+	sessionsLimit = 0
+	sessionsAll = false
+	sessionsCloseYes = false
+	sessionsCloseDryRun = false
+	saveDataYes = false
+	saveDataDryRun = false
+	saveDataWait = false
+	saveDataTimeout = defaultSaveDataTimeout
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -375,4 +417,92 @@ func serverConfigJSON(name, version, host string, port int) []byte {
 		HTTPPortNumber: port,
 	})
 	return data
+}
+
+// threadsJSON returns JSON for a TM1 Threads response.
+func threadsJSON(threads ...model.Thread) []byte {
+	resp := struct {
+		Value []model.Thread `json:"value"`
+	}{Value: threads}
+	if resp.Value == nil {
+		resp.Value = []model.Thread{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// messageLogJSON returns JSON for a TM1 MessageLogEntries response.
+func messageLogJSON(entries ...model.MessageLogEntry) []byte {
+	resp := struct {
+		Value []model.MessageLogEntry `json:"value"`
+	}{Value: entries}
+	if resp.Value == nil {
+		resp.Value = []model.MessageLogEntry{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// transactionLogJSON returns JSON for a TM1 TransactionLogEntries response.
+func transactionLogJSON(entries ...model.TransactionLogEntry) []byte {
+	resp := struct {
+		Value []model.TransactionLogEntry `json:"value"`
+	}{Value: entries}
+	if resp.Value == nil {
+		resp.Value = []model.TransactionLogEntry{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// auditLogJSON returns JSON for a TM1 AuditLogEntries response.
+func auditLogJSON(entries ...model.AuditLogEntry) []byte {
+	resp := struct {
+		Value []model.AuditLogEntry `json:"value"`
+	}{Value: entries}
+	if resp.Value == nil {
+		resp.Value = []model.AuditLogEntry{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// sessionsJSON returns JSON for a TM1 Sessions response.
+func sessionsJSON(sessions ...model.Session) []byte {
+	resp := struct {
+		Value []model.Session `json:"value"`
+	}{Value: sessions}
+	if resp.Value == nil {
+		resp.Value = []model.Session{}
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+// activeSessionJSON returns JSON for a TM1 ActiveSession response.
+func activeSessionJSON(id int64) []byte {
+	data, _ := json.Marshal(model.ActiveSessionRef{ID: id})
+	return data
+}
+
+// injectStdin replaces os.Stdin with a pipe seeded with input. The original
+// stdin is restored via t.Cleanup. Used for tests that exercise prompts
+// like promptYesNo. Tests using this helper must not run with t.Parallel
+// since os.Stdin is process-global.
+func injectStdin(t *testing.T, input string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("cannot create stdin pipe: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	if _, err := w.WriteString(input); err != nil {
+		t.Fatalf("cannot write to stdin pipe: %v", err)
+	}
+	w.Close()
+	t.Cleanup(func() {
+		os.Stdin = orig
+		r.Close()
+	})
 }
