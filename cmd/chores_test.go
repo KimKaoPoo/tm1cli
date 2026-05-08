@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -863,5 +864,625 @@ func TestChoresShow_NoTasks(t *testing.T) {
 	}
 	if !strings.Contains(out, "STEP") {
 		t.Errorf("expected STEP header even when empty, got: %s", out)
+	}
+}
+
+// ============================================================
+// chores activate / deactivate
+// ============================================================
+
+type choreToggleHandlerOpts struct {
+	chore      *model.Chore
+	getBody    []byte // overrides marshalled chore body when non-nil
+	getStatus  int
+	postStatus int
+	posts      *int
+	gets       *int
+	postPaths  *[]string
+	getPaths   *[]string
+}
+
+func newChoreToggleHandler(opts choreToggleHandlerOpts) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/Chores("):
+			if opts.gets != nil {
+				*opts.gets++
+			}
+			if opts.getPaths != nil {
+				*opts.getPaths = append(*opts.getPaths, r.URL.Path)
+			}
+			status := opts.getStatus
+			if status == 0 {
+				if opts.chore == nil && opts.getBody == nil {
+					status = http.StatusNotFound
+				} else {
+					status = http.StatusOK
+				}
+			}
+			if status >= 400 {
+				w.WriteHeader(status)
+				w.Write([]byte(`{"error":"failed"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if opts.getBody != nil {
+				w.Write(opts.getBody)
+				return
+			}
+			body, _ := json.Marshal(opts.chore)
+			w.Write(body)
+		case r.Method == "POST" &&
+			(strings.Contains(r.URL.Path, "tm1.Activate") || strings.Contains(r.URL.Path, "tm1.Deactivate")):
+			if opts.posts != nil {
+				*opts.posts++
+			}
+			if opts.postPaths != nil {
+				*opts.postPaths = append(*opts.postPaths, r.URL.Path)
+			}
+			status := opts.postStatus
+			if status == 0 {
+				status = http.StatusOK
+			}
+			w.WriteHeader(status)
+			if status == http.StatusNoContent {
+				return
+			}
+			if status >= 400 {
+				w.Write([]byte(`{"error":"failed"}`))
+				return
+			}
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"unexpected route"}`))
+		}
+	}
+}
+
+func TestChoresActivate_Success(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	postPaths := []string{}
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:     &model.Chore{Name: "Daily", Active: false},
+		posts:     &posts,
+		postPaths: &postPaths,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected 1 POST, got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "Chore 'Daily' activated.") {
+		t.Errorf("expected success message in stdout, got: %s", cap.Stdout)
+	}
+	if len(postPaths) != 1 || !strings.Contains(postPaths[0], "Chores('Daily')/tm1.Activate") {
+		t.Errorf("expected POST to Chores('Daily')/tm1.Activate, got: %v", postPaths)
+	}
+}
+
+func TestChoresDeactivate_Success(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	postPaths := []string{}
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:     &model.Chore{Name: "Daily", Active: true},
+		posts:     &posts,
+		postPaths: &postPaths,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "deactivate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected 1 POST, got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "Chore 'Daily' deactivated.") {
+		t.Errorf("expected success message in stdout, got: %s", cap.Stdout)
+	}
+	if len(postPaths) != 1 || !strings.Contains(postPaths[0], "Chores('Daily')/tm1.Deactivate") {
+		t.Errorf("expected POST to Chores('Daily')/tm1.Deactivate, got: %v", postPaths)
+	}
+}
+
+func TestChoresActivate_AlreadyActive_Idempotent(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: true},
+		posts: &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("idempotent activate must not POST, got %d POSTs", posts)
+	}
+	if !strings.Contains(cap.Stdout, "already active") {
+		t.Errorf("expected 'already active' info in stdout, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresDeactivate_AlreadyInactive_Idempotent(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "deactivate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("idempotent deactivate must not POST, got %d POSTs", posts)
+	}
+	if !strings.Contains(cap.Stdout, "already inactive") {
+		t.Errorf("expected 'already inactive' info in stdout, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresActivate_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		getStatus: http.StatusNotFound,
+		posts:     &posts,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Missing", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected no POST on not-found, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "Chore 'Missing' not found.") {
+		t.Errorf("expected 'not found' on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) {
+		t.Fatalf("expected *silentErrCoded, got: %T %v", execErr, execErr)
+	}
+	if coded.code != 3 {
+		t.Errorf("expected exit code 3, got %d", coded.code)
+	}
+}
+
+func TestChoresDeactivate_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		getStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "deactivate", "Missing", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Chore 'Missing' not found.") {
+		t.Errorf("expected 'not found' on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) || coded.code != 3 {
+		t.Errorf("expected exit code 3, got: %v", execErr)
+	}
+}
+
+func TestChoresActivate_PermissionDenied(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:      &model.Chore{Name: "Daily", Active: false},
+		postStatus: http.StatusForbidden,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Permission denied") {
+		t.Errorf("expected permission-denied message on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if errors.As(execErr, &coded) {
+		t.Errorf("403 should map to errSilent (exit 1), got coded exit %d", coded.code)
+	}
+}
+
+func TestChoresDeactivate_PermissionDenied(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:      &model.Chore{Name: "Daily", Active: true},
+		postStatus: http.StatusForbidden,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "deactivate", "Daily", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Permission denied") {
+		t.Errorf("expected permission-denied message on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if errors.As(execErr, &coded) {
+		t.Errorf("403 should map to errSilent (exit 1), got coded exit %d", coded.code)
+	}
+}
+
+func TestChoresActivate_GET_PermissionDenied(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		getStatus: http.StatusForbidden,
+		posts:     &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected no POST when GET returns 403, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "Permission denied") {
+		t.Errorf("expected permission-denied message on stderr, got: %s", cap.Stderr)
+	}
+}
+
+func TestChoresActivate_PostNotFoundRace(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:      &model.Chore{Name: "Daily", Active: false},
+		postStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "Chore 'Daily' not found.") {
+		t.Errorf("expected 'not found' on stderr after race, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) || coded.code != 3 {
+		t.Errorf("expected exit code 3, got: %v", execErr)
+	}
+}
+
+func TestChoresActivate_GenericServerError(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:      &model.Chore{Name: "Daily", Active: false},
+		postStatus: http.StatusInternalServerError,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, "HTTP 500") {
+		t.Errorf("expected HTTP 500 message on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if errors.As(execErr, &coded) {
+		t.Errorf("500 should map to errSilent (exit 1), got coded exit %d", coded.code)
+	}
+}
+
+func TestChoresActivate_MissingActiveField(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		getBody: []byte(`{"Name":"Daily"}`),
+		posts:   &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("must not POST when Active field missing, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "missing 'Active' field") {
+		t.Errorf("expected missing-Active error, got: %s", cap.Stderr)
+	}
+}
+
+func TestChoresActivate_DryRun(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	gets := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+		gets:  &gets,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--dry-run"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("dry-run must not POST, got %d POSTs", posts)
+	}
+	if gets != 1 {
+		t.Errorf("expected 1 GET for state lookup, got %d", gets)
+	}
+	if !strings.Contains(cap.Stdout, "[dry-run] Would activate chore 'Daily'.") {
+		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresDeactivate_DryRun(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: true},
+		posts: &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "deactivate", "Daily", "--dry-run"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("dry-run must not POST, got %d POSTs", posts)
+	}
+	if !strings.Contains(cap.Stdout, "[dry-run] Would deactivate chore 'Daily'.") {
+		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresActivate_DryRunBeatsYes(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--dry-run", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("--dry-run must take precedence over --yes (no POST), got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "[dry-run]") {
+		t.Errorf("expected dry-run preview, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresActivate_DryRun_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+	}))
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--dry-run", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, out)
+	}
+	if result["status"] != "dry-run" || result["chore"] != "Daily" || result["action"] != "activate" {
+		t.Errorf("unexpected JSON result: %+v", result)
+	}
+}
+
+func TestChoresActivate_PromptDecline(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+	injectStdin(t, "n\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily"})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected no POST when user declines, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "About to activate chore 'Daily'.") {
+		t.Errorf("expected confirmation banner on stderr, got: %s", cap.Stderr)
+	}
+}
+
+func TestChoresActivate_PromptAccept(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected POST after accept, got %d", posts)
+	}
+	if !strings.Contains(cap.Stdout, "Chore 'Daily' activated.") {
+		t.Errorf("expected success message, got: %s", cap.Stdout)
+	}
+}
+
+func TestChoresActivate_YesBypassesPrompt(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if posts != 1 {
+		t.Errorf("expected 1 POST, got %d", posts)
+	}
+	if strings.Contains(cap.Stderr, "(y/N)") || strings.Contains(cap.Stderr, "About to activate") {
+		t.Errorf("--yes should suppress prompt, but prompt text appeared: %s", cap.Stderr)
+	}
+}
+
+func TestChoresActivate_JSON_Success(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+	}))
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, out)
+	}
+	if result["status"] != "activated" || result["chore"] != "Daily" {
+		t.Errorf("unexpected JSON result: %+v", result)
+	}
+}
+
+func TestChoresActivate_JSON_NoopIdempotent(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: true},
+	}))
+
+	out := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--yes", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, out)
+	}
+	if result["status"] != "noop" || result["chore"] != "Daily" || result["active"] != "true" {
+		t.Errorf("unexpected JSON result: %+v", result)
+	}
+}
+
+func TestChoresActivate_JSON_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		getStatus: http.StatusNotFound,
+	}))
+
+	var execErr error
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Missing", "--yes", "--output", "json"})
+		execErr = rootCmd.Execute()
+	})
+
+	if !strings.Contains(cap.Stderr, `"error"`) || !strings.Contains(cap.Stderr, "Chore 'Missing' not found.") {
+		t.Errorf("expected JSON-shaped error on stderr, got: %s", cap.Stderr)
+	}
+	var coded *silentErrCoded
+	if !errors.As(execErr, &coded) || coded.code != 3 {
+		t.Errorf("expected exit code 3, got: %v", execErr)
+	}
+}
+
+func TestChoresActivate_JSON_PromptDoesNotCorruptStdout(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore: &model.Chore{Name: "Daily", Active: false},
+		posts: &posts,
+	}))
+	injectStdin(t, "y\n")
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily", "--output", "json"})
+		rootCmd.Execute()
+	})
+
+	if strings.Contains(cap.Stdout, "(y/N)") || strings.Contains(cap.Stdout, "Continue") || strings.Contains(cap.Stdout, "About to") {
+		t.Errorf("prompt text leaked onto stdout (corrupts JSON consumers): %q", cap.Stdout)
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(cap.Stdout)), &result); err != nil {
+		t.Fatalf("stdout is not clean JSON: %v\nstdout: %q", err, cap.Stdout)
+	}
+	if result["status"] != "activated" || result["chore"] != "Daily" {
+		t.Errorf("unexpected JSON: %+v", result)
+	}
+	if posts != 1 {
+		t.Errorf("expected POST after accept, got %d", posts)
+	}
+}
+
+func TestChoresActivate_NameWithQuote_URLEscaped(t *testing.T) {
+	resetCmdFlags(t)
+	postPaths := []string{}
+	getPaths := []string{}
+	setupMockTM1(t, newChoreToggleHandler(choreToggleHandlerOpts{
+		chore:     &model.Chore{Name: "Daily's", Active: false},
+		postPaths: &postPaths,
+		getPaths:  &getPaths,
+	}))
+
+	captureAll(t, func() {
+		rootCmd.SetArgs([]string{"chores", "activate", "Daily's", "--yes"})
+		rootCmd.Execute()
+	})
+
+	if len(postPaths) != 1 {
+		t.Fatalf("expected 1 POST, got %d", len(postPaths))
+	}
+	// Single quote is OData-doubled by odataEscape, then URL-escaped on the wire.
+	// httptest's r.URL.Path is the decoded form, so we observe the doubled-quote
+	// literally as Daily''s. The URL-escape correctness is exercised separately
+	// by TestOdataKey on odataKey.
+	if !strings.Contains(postPaths[0], "Chores('Daily''s')/tm1.Activate") {
+		t.Errorf("expected POST path with OData-doubled quote, got: %s", postPaths[0])
+	}
+	if len(getPaths) != 1 || !strings.Contains(getPaths[0], "Chores('Daily''s')") {
+		t.Errorf("expected GET path with OData-doubled quote, got: %v", getPaths)
 	}
 }

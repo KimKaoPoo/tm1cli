@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,12 +18,16 @@ import (
 )
 
 var (
-	choresFilter     string
-	choresActive     bool
-	choresInactive   bool
-	choresLimit      int
-	choresAll        bool
-	choresShowSystem bool
+	choresFilter           string
+	choresActive           bool
+	choresInactive         bool
+	choresLimit            int
+	choresAll              bool
+	choresShowSystem       bool
+	choresActivateYes      bool
+	choresActivateDryRun   bool
+	choresDeactivateYes    bool
+	choresDeactivateDryRun bool
 )
 
 var choresCmd = &cobra.Command{
@@ -412,10 +418,207 @@ func renderChoreParams(params []model.ChoreTaskParam) string {
 	return strings.Join(parts, ", ")
 }
 
+var choresActivateCmd = &cobra.Command{
+	Use:          "activate <name>",
+	Short:        "Activate a chore (resume its schedule)",
+	SilenceUsage: true,
+	Long: `Activate a chore so the TM1 server resumes running it on schedule.
+
+REST API: POST /Chores('name')/tm1.Activate
+
+If the chore is already active, the command prints an info message and exits 0
+without contacting the server again (idempotent).
+
+The command prompts for confirmation by default. Use --yes to skip the prompt
+for scripting. Use --dry-run to preview without sending the POST; --dry-run
+takes precedence over --yes.
+
+Exit codes:
+  0  chore activated (or already active)
+  1  generic error (auth, network, server, permission denied)
+  3  chore not found`,
+	Example: `  tm1cli chores activate "DailyLoad"
+  tm1cli chores activate "DailyLoad" --yes
+  tm1cli chores activate "DailyLoad" --dry-run
+  tm1cli chores activate "DailyLoad" --output json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runChoresActivate,
+}
+
+var choresDeactivateCmd = &cobra.Command{
+	Use:          "deactivate <name>",
+	Short:        "Deactivate a chore (suspend its schedule)",
+	SilenceUsage: true,
+	Long: `Deactivate a chore so the TM1 server stops running it on schedule.
+
+REST API: POST /Chores('name')/tm1.Deactivate
+
+If the chore is already inactive, the command prints an info message and exits 0
+without contacting the server again (idempotent).
+
+The command prompts for confirmation by default. Use --yes to skip the prompt
+for scripting. Use --dry-run to preview without sending the POST; --dry-run
+takes precedence over --yes.
+
+Exit codes:
+  0  chore deactivated (or already inactive)
+  1  generic error (auth, network, server, permission denied)
+  3  chore not found`,
+	Example: `  tm1cli chores deactivate "DailyLoad"
+  tm1cli chores deactivate "DailyLoad" --yes
+  tm1cli chores deactivate "DailyLoad" --dry-run
+  tm1cli chores deactivate "DailyLoad" --output json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runChoresDeactivate,
+}
+
+func runChoresActivate(cmd *cobra.Command, args []string) error {
+	return runChoresToggle(args[0], true, choresActivateYes, choresActivateDryRun)
+}
+
+func runChoresDeactivate(cmd *cobra.Command, args []string) error {
+	return runChoresToggle(args[0], false, choresDeactivateYes, choresDeactivateDryRun)
+}
+
+// choreEndpoint formats a Chores-collection endpoint with the chore name
+// OData- and URL-escaped. Mirrors threadEndpoint: empty suffix yields the
+// bare entity URL, otherwise the suffix is joined as an action segment.
+func choreEndpoint(name, suffix string) string {
+	if suffix == "" {
+		return fmt.Sprintf("Chores('%s')", odataKey(name))
+	}
+	return fmt.Sprintf("Chores('%s')/%s", odataKey(name), suffix)
+}
+
+// runChoresToggle drives `chores activate` and `chores deactivate`. target
+// is the desired Active state. The flow is:
+//  1. GET to verify existence and read current Active state.
+//  2. If already in target state, emit info and return success (idempotent).
+//  3. If dry-run, print preview and return.
+//  4. Else, prompt unless yes==true, then POST tm1.Activate / tm1.Deactivate.
+func runChoresToggle(name string, target, yes, dryRun bool) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		output.PrintError(err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+	jsonMode := isJSONOutput(cfg)
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), jsonMode)
+		return errSilent
+	}
+
+	labels := choreToggleLabels(target)
+
+	chore, err := fetchChoreActive(cl, name)
+	if err != nil {
+		return handleChoreToggleError(err, name, jsonMode)
+	}
+
+	if chore.Active == target {
+		if jsonMode {
+			output.PrintJSON(map[string]string{
+				"status":  "noop",
+				"chore":   name,
+				"active":  strconv.FormatBool(chore.Active),
+				"message": fmt.Sprintf("Chore '%s' is already %s.", name, labels.state),
+			})
+		} else {
+			fmt.Printf("Chore '%s' is already %s. No change.\n", name, labels.state)
+		}
+		return nil
+	}
+
+	if dryRun {
+		if jsonMode {
+			output.PrintJSON(map[string]string{
+				"status": "dry-run",
+				"chore":  name,
+				"action": labels.verb,
+			})
+		} else {
+			fmt.Printf("[dry-run] Would %s chore '%s'.\n", labels.verb, name)
+		}
+		return nil
+	}
+
+	if !yes {
+		fmt.Fprintf(os.Stderr, "About to %s chore '%s'.\n", labels.verb, name)
+		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
+			return nil
+		}
+	}
+
+	if _, err := cl.Post(choreEndpoint(name, labels.op), map[string]interface{}{}); err != nil {
+		return handleChoreToggleError(err, name, jsonMode)
+	}
+
+	if jsonMode {
+		output.PrintJSON(map[string]string{
+			"status": labels.past,
+			"chore":  name,
+		})
+	} else {
+		fmt.Printf("Chore '%s' %s.\n", name, labels.past)
+	}
+	return nil
+}
+
+// choreToggleLabels returns the action vocabulary for a toggle direction:
+// the verb ("activate"), the OData operation segment ("tm1.Activate"), the
+// past-tense status ("activated"), and the post-toggle state name ("active").
+func choreToggleLabels(target bool) struct{ verb, op, past, state string } {
+	if target {
+		return struct{ verb, op, past, state string }{"activate", "tm1.Activate", "activated", "active"}
+	}
+	return struct{ verb, op, past, state string }{"deactivate", "tm1.Deactivate", "deactivated", "inactive"}
+}
+
+// fetchChoreActive issues GET Chores('name')?$select=Name,Active and returns
+// a populated Chore. It probes Active via *bool so a missing field surfaces
+// as an explicit error rather than silently defaulting to false.
+func fetchChoreActive(cl *client.Client, name string) (*model.Chore, error) {
+	data, err := cl.Get(choreEndpoint(name, "") + "?$select=Name,Active")
+	if err != nil {
+		return nil, err
+	}
+	var probe struct {
+		Name   string `json:"Name"`
+		Active *bool  `json:"Active"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("Cannot parse server response.")
+	}
+	if probe.Active == nil {
+		return nil, fmt.Errorf("Server response missing 'Active' field for chore '%s'.", name)
+	}
+	return &model.Chore{Name: probe.Name, Active: *probe.Active}, nil
+}
+
+// handleChoreToggleError funnels common failure modes through one place:
+// not-found maps to exit code 3, 403 to a friendlier permission message.
+// Falls through to the raw client error otherwise. Mirrors handleThreadCancelError;
+// if internal/client later exposes typed status errors, swap both at once.
+func handleChoreToggleError(err error, name string, jsonMode bool) error {
+	if errors.Is(err, client.ErrNotFound) {
+		output.PrintError(fmt.Sprintf("Chore '%s' not found.", name), jsonMode)
+		return errExit(3)
+	}
+	if strings.HasPrefix(err.Error(), "HTTP 403") {
+		output.PrintError("Permission denied. Activating or deactivating chores requires admin privileges.", jsonMode)
+		return errSilent
+	}
+	output.PrintError(err.Error(), jsonMode)
+	return errSilent
+}
+
 func init() {
 	rootCmd.AddCommand(choresCmd)
 	choresCmd.AddCommand(choresListCmd)
 	choresCmd.AddCommand(choresShowCmd)
+	choresCmd.AddCommand(choresActivateCmd)
+	choresCmd.AddCommand(choresDeactivateCmd)
 
 	choresListCmd.Flags().StringVar(&choresFilter, "filter", "", "Filter by name (case-insensitive, partial match)")
 	choresListCmd.Flags().BoolVar(&choresActive, "active", false, "Show only active chores")
@@ -423,4 +626,10 @@ func init() {
 	choresListCmd.Flags().IntVar(&choresLimit, "limit", 0, "Max results to show (default from settings)")
 	choresListCmd.Flags().BoolVar(&choresAll, "all", false, "Show all results, no limit")
 	choresListCmd.Flags().BoolVar(&choresShowSystem, "show-system", false, "Include system chores (names starting with })")
+
+	choresActivateCmd.Flags().BoolVar(&choresActivateYes, "yes", false, "Skip confirmation prompt")
+	choresActivateCmd.Flags().BoolVar(&choresActivateDryRun, "dry-run", false, "Preview the activate without sending it")
+
+	choresDeactivateCmd.Flags().BoolVar(&choresDeactivateYes, "yes", false, "Skip confirmation prompt")
+	choresDeactivateCmd.Flags().BoolVar(&choresDeactivateDryRun, "dry-run", false, "Preview the deactivate without sending it")
 }
