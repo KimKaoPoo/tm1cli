@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 	"tm1cli/internal/model"
 )
 
@@ -1485,4 +1486,420 @@ func TestChoresActivate_NameWithQuote_URLEscaped(t *testing.T) {
 	if len(getPaths) != 1 || !strings.Contains(getPaths[0], "Chores('Daily''s')") {
 		t.Errorf("expected GET path with OData-doubled quote, got: %v", getPaths)
 	}
+}
+
+// ============================================================
+// chores run
+// ============================================================
+
+func TestRunChoresRun_Success(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if !strings.Contains(cap.Stdout, "executed successfully") {
+		t.Errorf("stdout missing 'executed successfully': %s", cap.Stdout)
+	}
+	if !strings.Contains(cap.Stdout, "Completed") {
+		t.Errorf("stdout missing 'Completed': %s", cap.Stdout)
+	}
+}
+
+func TestRunChoresRun_Async(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunAsync = true
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "Threads('314')")
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if !strings.Contains(cap.Stdout, "started asynchronously") {
+		t.Errorf("stdout missing 'started asynchronously': %s", cap.Stdout)
+	}
+	if !strings.Contains(cap.Stdout, "314") {
+		t.Errorf("stdout missing thread id '314': %s", cap.Stdout)
+	}
+}
+
+func TestRunChoresRun_Async_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunAsync = true
+	flagOutput = "json"
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "Threads('314')")
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "started" {
+		t.Errorf("Status = %q, want %q", result.Status, "started")
+	}
+	if result.ThreadID != "314" {
+		t.Errorf("ThreadID = %q, want %q", result.ThreadID, "314")
+	}
+}
+
+func TestRunChoresRun_NotFound(t *testing.T) {
+	resetCmdFlags(t)
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"not found"}`))
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Missing"})
+	})
+
+	if exitCodeForError(err) != 3 {
+		t.Errorf("exit code = %d, want 3 (err: %v)", exitCodeForError(err), err)
+	}
+	if !strings.Contains(cap.Stderr, "Chore 'Missing' not found.") {
+		t.Errorf("stderr missing 'not found' message: %s", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_Timeout(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunTimeout = 50 * time.Millisecond
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"SlowChore"})
+	})
+
+	if exitCodeForError(err) != 4 {
+		t.Errorf("exit code = %d, want 4 (err: %v)", exitCodeForError(err), err)
+	}
+	if !strings.Contains(cap.Stderr, "did not complete within") {
+		t.Errorf("stderr missing timeout message: %s", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_TaskFailure(t *testing.T) {
+	resetCmdFlags(t)
+	failMsg := "Chore 'Nightly' failed at step 2: Process 'Bad' returned an error"
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(failMsg))
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 1 {
+		t.Errorf("exit code = %d, want 1", exitCodeForError(err))
+	}
+	if !strings.Contains(cap.Stderr, "failed at step 2") {
+		t.Errorf("stderr missing failure message: %s", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_TaskFailure_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+	failMsg := "Chore 'Nightly' failed at step 2: Process 'Bad' returned an error"
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(failMsg))
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 1 {
+		t.Errorf("exit code = %d, want 1", exitCodeForError(err))
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "error" {
+		t.Errorf("Status = %q, want %q", result.Status, "error")
+	}
+	if !strings.Contains(result.Message, "failed at step 2") {
+		t.Errorf("Message does not contain server text: %q", result.Message)
+	}
+}
+
+func TestRunChoresRun_JSONSuccess(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want %q", result.Status, "completed")
+	}
+	if result.Chore != "Nightly" {
+		t.Errorf("Chore = %q, want %q", result.Chore, "Nightly")
+	}
+	// DurationMs must be present (no omitempty); verify the raw JSON contains the key.
+	if !strings.Contains(cap.Stdout, `"duration_ms"`) {
+		t.Errorf("JSON output missing 'duration_ms' field: %s", cap.Stdout)
+	}
+	if result.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", result.DurationMs)
+	}
+}
+
+func TestRunChoresRun_VerbosePreflightListsTasks(t *testing.T) {
+	resetCmdFlags(t)
+	flagVerbose = true
+	tasksBody := `{"Name":"Nightly","Tasks":[{"Step":1,"Process":{"Name":"LoadData"}},{"Step":2,"Process":{"Name":"RunReport"}}]}`
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(tasksBody))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if !strings.Contains(cap.Stderr, "Chore 'Nightly' has 2 task(s):") {
+		t.Errorf("stderr missing task list header: %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stderr, "[1] LoadData") {
+		t.Errorf("stderr missing '[1] LoadData': %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stderr, "[2] RunReport") {
+		t.Errorf("stderr missing '[2] RunReport': %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stdout, "executed successfully") {
+		t.Errorf("stdout missing 'executed successfully': %s", cap.Stdout)
+	}
+}
+
+func TestRunChoresRun_VerbosePreflightFailureIsNonFatal(t *testing.T) {
+	resetCmdFlags(t)
+	flagVerbose = true
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"server error"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error (preflight failure is non-fatal), got: %v", err)
+	}
+	if !strings.Contains(cap.Stderr, "[warn] cannot fetch chore tasks") {
+		t.Errorf("stderr missing warn message: %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stdout, "executed successfully") {
+		t.Errorf("stdout missing 'executed successfully': %s", cap.Stdout)
+	}
+}
+
+func TestRunChoresRun_URLEncoding(t *testing.T) {
+	cases := []struct {
+		name         string
+		wantPathPart string
+	}{
+		{"Night Load", "Chores('Night%20Load')"},
+		{"A/B", "Chores('A%2FB')"},
+		{"A'B", "Chores('A%27B')"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetCmdFlags(t)
+			var gotPath string
+			setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.EscapedPath()
+				w.WriteHeader(http.StatusNoContent)
+			})
+
+			captureAll(t, func() {
+				_ = runChoresRun(choresRunCmd, []string{tc.name})
+			})
+
+			if !strings.Contains(gotPath, tc.wantPathPart) {
+				t.Errorf("EscapedPath = %q, want it to contain %q", gotPath, tc.wantPathPart)
+			}
+		})
+	}
+}
+
+func TestRunChoresRun_AsyncIgnoresTimeoutFlag(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunAsync = true
+	choreRunTimeout = 1 * time.Millisecond
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Location", "Threads('99')")
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	var err error
+	captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if err != nil {
+		t.Errorf("expected nil error (async skips SetTimeout), got: %v", err)
+	}
+}
+
+func TestRunChoresRun_TimeoutZero(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunTimeout = 0
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 1 {
+		t.Errorf("exit code = %d, want 1 (err: %v)", exitCodeForError(err), err)
+	}
+	if !strings.Contains(cap.Stderr, "--timeout must be greater than zero.") {
+		t.Errorf("stderr missing timeout-zero error: %s", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_AsyncServerIgnoredPrefer(t *testing.T) {
+	resetCmdFlags(t)
+	choreRunAsync = true
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 1 {
+		t.Errorf("exit code = %d, want 1 (err: %v)", exitCodeForError(err), err)
+	}
+	if !strings.Contains(cap.Stderr, "async response missing Location") {
+		t.Errorf("stderr missing async-no-location message: %s", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_ExitCodes(t *testing.T) {
+	t.Run("404 -> exit 3", func(t *testing.T) {
+		resetCmdFlags(t)
+		setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`not found`))
+		})
+		var err error
+		captureAll(t, func() {
+			err = runChoresRun(choresRunCmd, []string{"Nightly"})
+		})
+		if got := exitCodeForError(err); got != 3 {
+			t.Errorf("exit code = %d, want 3 (err: %v)", got, err)
+		}
+	})
+
+	t.Run("sleep > timeout -> exit 4", func(t *testing.T) {
+		resetCmdFlags(t)
+		choreRunTimeout = 50 * time.Millisecond
+		setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(500 * time.Millisecond)
+			w.WriteHeader(http.StatusNoContent)
+		})
+		var err error
+		captureAll(t, func() {
+			err = runChoresRun(choresRunCmd, []string{"Nightly"})
+		})
+		if got := exitCodeForError(err); got != 4 {
+			t.Errorf("exit code = %d, want 4 (err: %v)", got, err)
+		}
+	})
+
+	t.Run("500 -> exit 1", func(t *testing.T) {
+		resetCmdFlags(t)
+		setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`server error`))
+		})
+		var err error
+		captureAll(t, func() {
+			err = runChoresRun(choresRunCmd, []string{"Nightly"})
+		})
+		if got := exitCodeForError(err); got != 1 {
+			t.Errorf("exit code = %d, want 1 (err: %v)", got, err)
+		}
+	})
+
+	t.Run("async missing Location -> exit 1", func(t *testing.T) {
+		resetCmdFlags(t)
+		choreRunAsync = true
+		setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+		var err error
+		captureAll(t, func() {
+			err = runChoresRun(choresRunCmd, []string{"Nightly"})
+		})
+		if got := exitCodeForError(err); got != 1 {
+			t.Errorf("exit code = %d, want 1 (err: %v)", got, err)
+		}
+	})
 }

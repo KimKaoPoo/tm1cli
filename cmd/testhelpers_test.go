@@ -266,6 +266,8 @@ func zeroAllFlags() {
 	choresActivateDryRun = false
 	choresDeactivateYes = false
 	choresDeactivateDryRun = false
+	choreRunAsync = false
+	choreRunTimeout = defaultChoreTimeout
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.

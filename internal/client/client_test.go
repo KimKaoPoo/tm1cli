@@ -754,3 +754,70 @@ func TestHTTPErrorBodyTruncation(t *testing.T) {
 		t.Errorf("error body should be truncated to 200 chars, but contains %d x's", strings.Count(errStr, "x"))
 	}
 }
+
+func TestParseThreadIDFromLocation(t *testing.T) {
+	tests := []struct {
+		input  string
+		wantID string
+		wantOK bool
+	}{
+		{"Threads('1234')", "1234", true},
+		{"https://host/api/v1/Threads('77')", "77", true},
+		{"https://host/api/v1/Threads('77')?api-version=1", "77", true},
+		{"", "", false},
+		{"Threads('')", "", false},
+		{"Threads('1234", "", false},
+		{"Sessions('77')", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			gotID, gotOK := parseThreadIDFromLocation(tt.input)
+			if gotOK != tt.wantOK {
+				t.Errorf("ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotID != tt.wantID {
+				t.Errorf("id = %q, want %q", gotID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestPostAsync_SendsPreferHeader_ParsesLocation(t *testing.T) {
+	var capturedPrefer string
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		capturedPrefer = r.Header.Get("Prefer")
+		w.Header().Set("Location", "Threads('77')")
+		w.WriteHeader(http.StatusAccepted)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	id, err := c.PostAsync("Chores('Demo')/tm1.Execute", map[string]interface{}{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "77" {
+		t.Errorf("id = %q, want %q", id, "77")
+	}
+	if capturedPrefer != "respond-async" {
+		t.Errorf("Prefer header = %q, want %q", capturedPrefer, "respond-async")
+	}
+}
+
+func TestPostAsync_NoLocation_ReturnsErrAsyncNoLocation(t *testing.T) {
+	ts := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer ts.Close()
+
+	c := newTestClient(t, ts.URL)
+	id, err := c.PostAsync("Chores('Demo')/tm1.Execute", map[string]interface{}{})
+
+	if !errors.Is(err, ErrAsyncNoLocation) {
+		t.Errorf("errors.Is(err, ErrAsyncNoLocation) = false, want true (err = %v)", err)
+	}
+	if id != "" {
+		t.Errorf("id = %q, want empty string", id)
+	}
+}
