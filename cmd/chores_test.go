@@ -1762,7 +1762,7 @@ func TestRunChoresRun_URLEncoding(t *testing.T) {
 	}{
 		{"Night Load", "Chores('Night%20Load')"},
 		{"A/B", "Chores('A%2FB')"},
-		{"A'B", "Chores('A%27B')"},
+		{"A'B", "Chores('A%27%27B')"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

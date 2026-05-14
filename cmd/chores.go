@@ -673,7 +673,7 @@ func runChoresRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	endpoint := fmt.Sprintf("Chores('%s')/tm1.Execute", url.PathEscape(choreName))
+	endpoint := choreEndpoint(choreName, "tm1.Execute")
 
 	if choreRunAsync {
 		return runChoreAsync(cl, choreName, endpoint, jsonMode)
@@ -702,7 +702,7 @@ func runChoreAsync(cl *client.Client, choreName, endpoint string, jsonMode bool)
 }
 
 func runChoreSync(cl *client.Client, choreName, endpoint string, jsonMode bool) error {
-	cl.SetTimeout(choreRunTimeout) // MUST run before Post — bounds the wait.
+	cl.SetTimeout(choreRunTimeout) // MUST run before Post.
 
 	start := time.Now()
 	_, err := cl.Post(endpoint, map[string]interface{}{})
@@ -733,6 +733,10 @@ func handleChoreRunError(err error, choreName, timeout string, jsonMode bool) er
 		output.PrintError(fmt.Sprintf("Chore '%s' not found.", choreName), jsonMode)
 		return errExit(3)
 	}
+	if strings.HasPrefix(err.Error(), "HTTP 403") {
+		output.PrintError("Permission denied. Running chores requires admin privileges.", jsonMode)
+		return errSilent
+	}
 	if errors.Is(err, client.ErrTimeout) {
 		msg := fmt.Sprintf("Chore '%s' did not complete within %s.", choreName, timeout)
 		if jsonMode {
@@ -755,9 +759,8 @@ func handleChoreRunError(err error, choreName, timeout string, jsonMode bool) er
 }
 
 func printChoreTasksPreflight(cl *client.Client, choreName string) error {
-	endpoint := fmt.Sprintf(
-		"Chores('%s')?$expand=Tasks($expand=Process($select=Name))",
-		url.PathEscape(choreName))
+	endpoint := choreEndpoint(choreName, "") +
+		"?$select=Name&$expand=Tasks($expand=Process($select=Name))"
 	data, err := cl.Get(endpoint)
 	if err != nil {
 		return err
