@@ -632,6 +632,11 @@ REST API: POST /Chores('name')/tm1.Execute
 By default, the command waits for the chore to complete (up to --timeout).
 Use --async to return immediately with the server-side thread ID.
 
+With --verbose, the chore's task list is printed to stderr before the run.
+TM1's tm1.Execute does not stream per-task results, so step-level failure
+detail comes from the server's error message on failure (typically HTTP
+5xx) rather than from a structured per-task status.
+
 Exit codes:
   0  chore executed successfully (sync) or async accepted
   1  generic error (auth, network, server, task failure)
