@@ -556,6 +556,61 @@ func TestRunSandboxList_AllOverridesLimit(t *testing.T) {
 	}
 }
 
+func TestRunSandboxList_TruncationSummary(t *testing.T) {
+	resetCmdFlags(t)
+
+	boxes := make([]model.Sandbox, 60)
+	for i := range boxes {
+		boxes[i] = model.Sandbox{Name: fmt.Sprintf("Box%02d", i)}
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(sandboxesJSON(boxes...))
+	})
+
+	captured := captureAll(t, func() {
+		if err := runSandboxList(sandboxListCmd, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stderr, "Showing 50 of 60") {
+		t.Errorf("stderr should contain 'Showing 50 of 60' truncation summary, got:\n%s", captured.Stderr)
+	}
+	if !strings.Contains(captured.Stdout, "Box00") || !strings.Contains(captured.Stdout, "Box49") {
+		t.Errorf("stdout should contain first 50 names, got:\n%s", captured.Stdout)
+	}
+	if strings.Contains(captured.Stdout, "Box50") || strings.Contains(captured.Stdout, "Box59") {
+		t.Errorf("stdout should not contain rows beyond limit, got:\n%s", captured.Stdout)
+	}
+}
+
+func TestRunSandboxList_CountReflectsActualTotal(t *testing.T) {
+	resetCmdFlags(t)
+	sandboxListCount = true
+
+	boxes := make([]model.Sandbox, 60)
+	for i := range boxes {
+		boxes[i] = model.Sandbox{Name: fmt.Sprintf("Box%02d", i)}
+	}
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(sandboxesJSON(boxes...))
+	})
+
+	captured := captureAll(t, func() {
+		if err := runSandboxList(sandboxListCmd, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if !strings.Contains(captured.Stdout, "60 sandboxes") {
+		t.Errorf("--count should report 60 (actual total), not limit; got:\n%s", captured.Stdout)
+	}
+}
+
 // ============================================================
 // Integration — runSandboxCreate
 // ============================================================
