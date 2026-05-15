@@ -1658,6 +1658,75 @@ func TestRunChoresRun_TaskFailure_JSON(t *testing.T) {
 	}
 }
 
+func TestRunChoresRun_NotFound_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`Not found`))
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 3 {
+		t.Errorf("exit code = %d, want 3", exitCodeForError(err))
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "not_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "not_found")
+	}
+	if result.Chore != "Nightly" {
+		t.Errorf("Chore = %q, want %q", result.Chore, "Nightly")
+	}
+	if !strings.Contains(result.Message, "not found") {
+		t.Errorf("Message = %q, want it to mention 'not found'", result.Message)
+	}
+	if cap.Stderr != "" {
+		t.Errorf("stderr should be empty in JSON mode, got: %q", cap.Stderr)
+	}
+}
+
+func TestRunChoresRun_Timeout_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+	choreRunTimeout = 50 * time.Millisecond
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 4 {
+		t.Errorf("exit code = %d, want 4", exitCodeForError(err))
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "timeout" {
+		t.Errorf("Status = %q, want %q", result.Status, "timeout")
+	}
+	if result.Timeout != choreRunTimeout.String() {
+		t.Errorf("Timeout = %q, want %q", result.Timeout, choreRunTimeout.String())
+	}
+	if !strings.Contains(result.Message, "did not complete within") {
+		t.Errorf("Message = %q, want it to mention 'did not complete within'", result.Message)
+	}
+	if cap.Stderr != "" {
+		t.Errorf("stderr should be empty in JSON mode, got: %q", cap.Stderr)
+	}
+}
+
 func TestRunChoresRun_JSONSuccess(t *testing.T) {
 	resetCmdFlags(t)
 	flagOutput = "json"

@@ -735,32 +735,38 @@ func runChoreSync(cl *client.Client, choreName, endpoint string, jsonMode bool) 
 
 func handleChoreRunError(err error, choreName, timeout string, jsonMode bool) error {
 	if errors.Is(err, client.ErrNotFound) {
-		output.PrintError(fmt.Sprintf("Chore '%s' not found.", choreName), jsonMode)
+		emitChoreError(choreName, "not_found", "",
+			fmt.Sprintf("Chore '%s' not found.", choreName), jsonMode)
 		return errExit(3)
 	}
 	if strings.HasPrefix(err.Error(), "HTTP 403") {
-		output.PrintError("Permission denied. Running chores requires admin privileges.", jsonMode)
+		emitChoreError(choreName, "forbidden", "",
+			"Permission denied. Running chores requires admin privileges.", jsonMode)
 		return errSilent
 	}
 	if errors.Is(err, client.ErrTimeout) {
-		msg := fmt.Sprintf("Chore '%s' did not complete within %s.", choreName, timeout)
-		if jsonMode {
-			output.PrintJSON(model.ChoreRunResult{
-				Chore: choreName, Status: "timeout", Timeout: timeout, Message: msg,
-			})
-		} else {
-			output.PrintError(msg, false)
-		}
+		emitChoreError(choreName, "timeout", timeout,
+			fmt.Sprintf("Chore '%s' did not complete within %s.", choreName, timeout), jsonMode)
 		return errExit(4)
 	}
+	emitChoreError(choreName, "error", "", err.Error(), jsonMode)
+	return errSilent
+}
+
+// emitChoreError unifies the error-output shape so JSON mode always emits a
+// single ChoreRunResult on stdout (matching the success path) and text mode
+// always emits a human-readable line on stderr.
+func emitChoreError(choreName, status, timeout, message string, jsonMode bool) {
 	if jsonMode {
 		output.PrintJSON(model.ChoreRunResult{
-			Chore: choreName, Status: "error", Message: err.Error(),
+			Chore:   choreName,
+			Status:  status,
+			Timeout: timeout,
+			Message: message,
 		})
-	} else {
-		output.PrintError(err.Error(), false)
+		return
 	}
-	return errSilent
+	output.PrintError(message, false)
 }
 
 func printChoreTasksPreflight(cl *client.Client, choreName string) error {

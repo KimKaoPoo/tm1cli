@@ -35,7 +35,7 @@ type ChoreWithTasks struct {
 }
 
 // ChoreRunResult is the JSON payload emitted by `chores run`.
-// Status values: "completed", "error", "timeout", "started".
+// Status values: "completed", "started", "error", "timeout", "not_found", "forbidden".
 type ChoreRunResult struct {
 	Chore      string `json:"chore"`
 	Status     string `json:"status"`
