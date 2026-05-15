@@ -268,6 +268,12 @@ func zeroAllFlags() {
 	choresDeactivateDryRun = false
 	choreRunAsync = false
 	choreRunTimeout = defaultChoreTimeout
+	sandboxListFilter = ""
+	sandboxListLimit = 0
+	sandboxListAll = false
+	sandboxListCount = false
+	sandboxListLoaded = false
+	sandboxListActive = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
@@ -512,6 +518,18 @@ func choresJSON(chores ...model.Chore) []byte {
 // choreDetailJSON returns JSON for a single TM1 Chore (show endpoint).
 func choreDetailJSON(chore model.Chore) []byte {
 	data, _ := json.Marshal(chore)
+	return data
+}
+
+// sandboxesJSON returns JSON for a TM1 Sandboxes response.
+func sandboxesJSON(boxes ...model.Sandbox) []byte {
+	resp := struct {
+		Value []model.Sandbox `json:"value"`
+	}{Value: boxes}
+	if resp.Value == nil {
+		resp.Value = []model.Sandbox{}
+	}
+	data, _ := json.Marshal(resp)
 	return data
 }
 
