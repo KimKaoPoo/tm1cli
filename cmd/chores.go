@@ -654,17 +654,17 @@ Exit codes:
 func runChoresRun(cmd *cobra.Command, args []string) error {
 	choreName := args[0]
 
+	if !choreRunAsync && choreRunTimeout <= 0 {
+		emitChoreError(choreName, "error", "", "--timeout must be greater than zero.", isJSONOutput(nil))
+		return errSilent
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		emitChoreError(choreName, "error", "", err.Error(), isJSONOutput(nil))
 		return errSilent
 	}
 	jsonMode := isJSONOutput(cfg)
-
-	if !choreRunAsync && choreRunTimeout <= 0 {
-		emitChoreError(choreName, "error", "", "--timeout must be greater than zero.", jsonMode)
-		return errSilent
-	}
 
 	cl, err := createClient(cfg)
 	if err != nil {
