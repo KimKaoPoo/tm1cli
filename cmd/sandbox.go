@@ -70,7 +70,7 @@ func runSandboxList(cmd *cobra.Command, args []string) error {
 
 	limit := getLimit(cfg, sandboxListLimit, sandboxListAll)
 	activeFilters := sandboxListFilter != "" || sandboxListLoaded || sandboxListActive
-	endpoint := "Sandboxes?$select=Name,IncludeInSandboxDimension,Loaded,Active,Queued"
+	endpoint := "Sandboxes?$select=Name,IncludeInSandboxDimension,IsLoaded,IsActive,IsQueued"
 
 	filterFallback := false
 	if sandboxListFilter != "" {
@@ -133,10 +133,10 @@ func applySandboxBoolFilters(sandboxes []model.Sandbox, loaded, active bool) []m
 	}
 	var out []model.Sandbox
 	for _, s := range sandboxes {
-		if loaded && !s.Loaded {
+		if loaded && !s.IsLoaded {
 			continue
 		}
-		if active && !s.Active {
+		if active && !s.IsActive {
 			continue
 		}
 		out = append(out, s)
@@ -169,9 +169,9 @@ func displaySandboxes(sandboxes []model.Sandbox, total int, limit int, jsonMode 
 		rows[i] = []string{
 			s.Name,
 			strconv.FormatBool(s.IncludeInSandboxDimension),
-			strconv.FormatBool(s.Loaded),
-			strconv.FormatBool(s.Active),
-			strconv.FormatBool(s.Queued),
+			strconv.FormatBool(s.IsLoaded),
+			strconv.FormatBool(s.IsActive),
+			strconv.FormatBool(s.IsQueued),
 		}
 	}
 	output.PrintTable(headers, rows)

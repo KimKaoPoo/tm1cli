@@ -51,10 +51,10 @@ func TestFilterSandboxesByName(t *testing.T) {
 
 func TestApplySandboxBoolFilters(t *testing.T) {
 	sandboxes := []model.Sandbox{
-		{Name: "LoadedOnly", Loaded: true, Active: false},
-		{Name: "ActiveOnly", Loaded: false, Active: true},
-		{Name: "Both", Loaded: true, Active: true},
-		{Name: "Neither", Loaded: false, Active: false},
+		{Name: "LoadedOnly", IsLoaded: true, IsActive: false},
+		{Name: "ActiveOnly", IsLoaded: false, IsActive: true},
+		{Name: "Both", IsLoaded: true, IsActive: true},
+		{Name: "Neither", IsLoaded: false, IsActive: false},
 	}
 
 	tests := []struct {
@@ -121,7 +121,7 @@ func TestDisplaySandboxes_TableHeaders(t *testing.T) {
 	sandboxListCount = false
 
 	sandboxes := []model.Sandbox{
-		{Name: "FY24Plan", IncludeInSandboxDimension: true, Loaded: true, Active: false, Queued: false},
+		{Name: "FY24Plan", IncludeInSandboxDimension: true, IsLoaded: true, IsActive: false, IsQueued: false},
 	}
 
 	out := captureStdout(t, func() {
@@ -150,7 +150,7 @@ func TestDisplaySandboxes_JSONOutput(t *testing.T) {
 	sandboxListCount = false
 
 	sandboxes := []model.Sandbox{
-		{Name: "A", Loaded: true, Active: true},
+		{Name: "A", IsLoaded: true, IsActive: true},
 		{Name: "B"},
 	}
 
@@ -165,7 +165,7 @@ func TestDisplaySandboxes_JSONOutput(t *testing.T) {
 	if len(parsed) != 2 {
 		t.Fatalf("JSON output length = %d, want 2", len(parsed))
 	}
-	if parsed[0].Name != "A" || !parsed[0].Loaded || !parsed[0].Active {
+	if parsed[0].Name != "A" || !parsed[0].IsLoaded || !parsed[0].IsActive {
 		t.Errorf("JSON[0] = %+v, want Name=A Loaded=true Active=true", parsed[0])
 	}
 }
@@ -240,7 +240,7 @@ func TestRunSandboxList_TableOutput(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(sandboxesJSON(
-			model.Sandbox{Name: "FY24Plan", IncludeInSandboxDimension: true, Loaded: true},
+			model.Sandbox{Name: "FY24Plan", IncludeInSandboxDimension: true, IsLoaded: true},
 			model.Sandbox{Name: "FY24Budget"},
 		))
 	})
@@ -265,7 +265,7 @@ func TestRunSandboxList_JSONOutput(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(sandboxesJSON(model.Sandbox{
-			Name: "FY24Plan", IncludeInSandboxDimension: true, Loaded: true, Active: true, Queued: false,
+			Name: "FY24Plan", IncludeInSandboxDimension: true, IsLoaded: true, IsActive: true, IsQueued: false,
 		}))
 	})
 
@@ -283,7 +283,7 @@ func TestRunSandboxList_JSONOutput(t *testing.T) {
 		t.Fatalf("expected 1 sandbox, got %d", len(parsed))
 	}
 	got := parsed[0]
-	if got.Name != "FY24Plan" || !got.IncludeInSandboxDimension || !got.Loaded || !got.Active || got.Queued {
+	if got.Name != "FY24Plan" || !got.IncludeInSandboxDimension || !got.IsLoaded || !got.IsActive || got.IsQueued {
 		t.Errorf("unexpected fields: %+v", got)
 	}
 }
@@ -295,9 +295,9 @@ func TestRunSandboxList_LoadedFilter(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(sandboxesJSON(
-			model.Sandbox{Name: "Loaded1", Loaded: true},
-			model.Sandbox{Name: "NotLoaded", Loaded: false},
-			model.Sandbox{Name: "Loaded2", Loaded: true, Active: true},
+			model.Sandbox{Name: "Loaded1", IsLoaded: true},
+			model.Sandbox{Name: "NotLoaded", IsLoaded: false},
+			model.Sandbox{Name: "Loaded2", IsLoaded: true, IsActive: true},
 		))
 	})
 
@@ -322,9 +322,9 @@ func TestRunSandboxList_ActiveFilter(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(sandboxesJSON(
-			model.Sandbox{Name: "Active1", Active: true},
+			model.Sandbox{Name: "Active1", IsActive: true},
 			model.Sandbox{Name: "NotActive"},
-			model.Sandbox{Name: "Active2", Active: true, Loaded: true},
+			model.Sandbox{Name: "Active2", IsActive: true, IsLoaded: true},
 		))
 	})
 
@@ -415,8 +415,8 @@ func TestRunSandboxList_FilterPlusBooleanFilters(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		// Server-side filter returns name-matched results; client must AND with --loaded.
 		w.Write(sandboxesJSON(
-			model.Sandbox{Name: "FY24Plan", Loaded: true},
-			model.Sandbox{Name: "PlanB", Loaded: false},
+			model.Sandbox{Name: "FY24Plan", IsLoaded: true},
+			model.Sandbox{Name: "PlanB", IsLoaded: false},
 		))
 	})
 
