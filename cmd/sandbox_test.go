@@ -136,8 +136,11 @@ func TestDisplaySandboxes_TableHeaders(t *testing.T) {
 	if !strings.Contains(out, "FY24Plan") {
 		t.Errorf("table output missing sandbox name, got:\n%s", out)
 	}
-	if !strings.Contains(out, "true") || !strings.Contains(out, "false") {
-		t.Errorf("table output missing true/false values, got:\n%s", out)
+	if !strings.Contains(out, "true") {
+		t.Errorf("table output missing 'true' for boolean column, got:\n%s", out)
+	}
+	if !strings.Contains(out, "false") {
+		t.Errorf("table output missing 'false' for boolean column, got:\n%s", out)
 	}
 }
 
@@ -217,8 +220,10 @@ func TestDisplaySandboxes_LimitTruncation(t *testing.T) {
 	if !strings.Contains(captured.Stdout, "A1") || !strings.Contains(captured.Stdout, "A2") {
 		t.Errorf("output should contain first 2 names, got:\n%s", captured.Stdout)
 	}
-	if strings.Contains(captured.Stdout, "A3") || strings.Contains(captured.Stdout, "A5") {
-		t.Errorf("output should not contain truncated names, got:\n%s", captured.Stdout)
+	for _, name := range []string{"A3", "A4", "A5"} {
+		if strings.Contains(captured.Stdout, name) {
+			t.Errorf("output should not contain truncated name %q, got:\n%s", name, captured.Stdout)
+		}
 	}
 	if !strings.Contains(captured.Stderr, "Showing 2 of 5") {
 		t.Errorf("stderr should contain truncation summary, got:\n%s", captured.Stderr)

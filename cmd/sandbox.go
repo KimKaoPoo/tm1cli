@@ -74,8 +74,7 @@ func runSandboxList(cmd *cobra.Command, args []string) error {
 
 	filterFallback := false
 	if sandboxListFilter != "" {
-		safeFilter := strings.ReplaceAll(sandboxListFilter, "'", "''")
-		filterEndpoint := endpoint + fmt.Sprintf("&$filter=contains(tolower(Name),tolower('%s'))", safeFilter)
+		filterEndpoint := endpoint + fmt.Sprintf("&$filter=contains(tolower(Name),tolower('%s'))", odataEscape(sandboxListFilter))
 		data, err := cl.Get(filterEndpoint)
 		if err == nil {
 			var resp model.SandboxResponse
