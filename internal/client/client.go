@@ -23,6 +23,11 @@ var ErrNotFound = errors.New("not found")
 // ErrTimeout is wrapped into timeout errors so callers can dispatch with errors.Is.
 var ErrTimeout = errors.New("timeout")
 
+// ErrAsyncNoLocation is returned when an async POST succeeds but the server
+// did not include a parseable "Threads('<id>')" Location header — i.e. it
+// likely ignored the Prefer: respond-async preference.
+var ErrAsyncNoLocation = errors.New("async response missing Location header")
+
 const defaultTimeout = 30 * time.Second
 
 type Client struct {
@@ -107,7 +112,7 @@ func (c *Client) setHeaders(req *http.Request) {
 	c.setAuth(req)
 }
 
-func (c *Client) do(req *http.Request) ([]byte, int, error) {
+func (c *Client) do(req *http.Request) (http.Header, []byte, int, error) {
 	c.setHeaders(req)
 
 	start := time.Now()
@@ -117,7 +122,7 @@ func (c *Client) do(req *http.Request) ([]byte, int, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, c.wrapError(err)
+		return nil, nil, 0, c.wrapError(err)
 	}
 	defer resp.Body.Close()
 
@@ -128,14 +133,14 @@ func (c *Client) do(req *http.Request) ([]byte, int, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("cannot read response: %w", err)
+		return resp.Header, nil, resp.StatusCode, fmt.Errorf("cannot read response: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
-		return body, resp.StatusCode, c.httpError(resp.StatusCode, body, req.URL.Path)
+		return resp.Header, body, resp.StatusCode, c.httpError(resp.StatusCode, body, req.URL.Path)
 	}
 
-	return body, resp.StatusCode, nil
+	return resp.Header, body, resp.StatusCode, nil
 }
 
 func (c *Client) Get(endpoint string) ([]byte, error) {
@@ -144,7 +149,7 @@ func (c *Client) Get(endpoint string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
-	body, _, err := c.do(req)
+	_, body, _, err := c.do(req)
 	return body, err
 }
 
@@ -162,7 +167,7 @@ func (c *Client) doWithPayload(method, endpoint string, payload interface{}) ([]
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
-	body, _, err := c.do(req)
+	_, body, _, err := c.do(req)
 	return body, err
 }
 
@@ -174,13 +179,65 @@ func (c *Client) Patch(endpoint string, payload interface{}) ([]byte, error) {
 	return c.doWithPayload("PATCH", endpoint, payload)
 }
 
+// PostAsync sends a POST with Prefer: respond-async. TM1 responds 202 Accepted
+// with Location: Threads('<id>'); the parsed numeric thread id is returned.
+// If the server omits or malforms the Location header (including the case
+// where it ignored the async preference and ran synchronously), the call
+// returns ErrAsyncNoLocation. HTTP errors >= 400 propagate from the
+// underlying do() path (ErrNotFound, ErrTimeout, etc.).
+func (c *Client) PostAsync(endpoint string, payload interface{}) (string, error) {
+	fullURL := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
+	var bodyReader io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("cannot marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest("POST", fullURL, bodyReader)
+	if err != nil {
+		return "", fmt.Errorf("cannot create request: %w", err)
+	}
+	req.Header.Set("Prefer", "respond-async")
+
+	headers, _, _, err := c.do(req)
+	if err != nil {
+		return "", err
+	}
+	id, ok := parseThreadIDFromLocation(headers.Get("Location"))
+	if !ok {
+		return "", ErrAsyncNoLocation
+	}
+	return id, nil
+}
+
+// parseThreadIDFromLocation extracts the thread id from a TM1 async Location
+// header. Accepts "Threads('1234')" alone or as a suffix of an absolute URL.
+// Returns ("", false) when missing, empty-id, malformed, or wrong entity.
+func parseThreadIDFromLocation(loc string) (string, bool) {
+	if loc == "" {
+		return "", false
+	}
+	i := strings.LastIndex(loc, "Threads('")
+	if i < 0 {
+		return "", false
+	}
+	rest := loc[i+len("Threads('"):]
+	j := strings.Index(rest, "'")
+	if j <= 0 {
+		return "", false
+	}
+	return rest[:j], true
+}
+
 func (c *Client) Delete(endpoint string) error {
 	url := c.baseURL + "/" + strings.TrimLeft(endpoint, "/")
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		return fmt.Errorf("cannot create request: %w", err)
 	}
-	_, _, err = c.do(req)
+	_, _, _, err = c.do(req)
 	return err
 }
 

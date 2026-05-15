@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"tm1cli/internal/client"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
@@ -28,6 +29,13 @@ var (
 	choresActivateDryRun   bool
 	choresDeactivateYes    bool
 	choresDeactivateDryRun bool
+)
+
+const defaultChoreTimeout = 30 * time.Minute
+
+var (
+	choreRunAsync   bool
+	choreRunTimeout time.Duration
 )
 
 var choresCmd = &cobra.Command{
@@ -613,12 +621,183 @@ func handleChoreToggleError(err error, name string, jsonMode bool) error {
 	return errSilent
 }
 
+var choresRunCmd = &cobra.Command{
+	Use:          "run <name>",
+	Short:        "Execute a chore immediately",
+	SilenceUsage: true,
+	Long: `Execute a chore on the TM1 server.
+
+REST API: POST /Chores('name')/tm1.Execute
+
+By default, the command waits for the chore to complete (up to --timeout).
+Use --async to return immediately with the server-side thread ID.
+
+With --verbose, the chore's task list is printed to stderr before the run.
+TM1's tm1.Execute does not stream per-task results, so step-level failure
+detail comes from the server's error message on failure (typically HTTP
+5xx) rather than from a structured per-task status.
+
+Exit codes:
+  0  chore executed successfully (sync) or async accepted
+  1  generic error (auth, network, server, task failure)
+  3  chore not found
+  4  wait exceeded --timeout`,
+	Example: `  tm1cli chores run "Nightly Load"
+  tm1cli chores run "Nightly Load" --async
+  tm1cli chores run "Nightly Load" --timeout 1h
+  tm1cli chores run "Nightly Load" --verbose
+  tm1cli chores run "Nightly Load" --output json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runChoresRun,
+}
+
+func runChoresRun(cmd *cobra.Command, args []string) error {
+	choreName := args[0]
+
+	if !choreRunAsync && choreRunTimeout <= 0 {
+		emitChoreError(choreName, "error", "", "--timeout must be greater than zero.", isJSONOutput(nil))
+		return errSilent
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		emitChoreError(choreName, "error", "", err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+	jsonMode := isJSONOutput(cfg)
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		emitChoreError(choreName, "error", "", err.Error(), jsonMode)
+		return errSilent
+	}
+
+	if flagVerbose {
+		if err := printChoreTasksPreflight(cl, choreName); err != nil {
+			fmt.Fprintf(os.Stderr, "[warn] cannot fetch chore tasks: %s\n", err)
+		}
+	}
+
+	endpoint := choreEndpoint(choreName, "tm1.Execute")
+
+	if choreRunAsync {
+		return runChoreAsync(cl, choreName, endpoint, jsonMode)
+	}
+	return runChoreSync(cl, choreName, endpoint, jsonMode)
+}
+
+func runChoreAsync(cl *client.Client, choreName, endpoint string, jsonMode bool) error {
+	threadID, err := cl.PostAsync(endpoint, map[string]interface{}{})
+	if err != nil {
+		return handleChoreRunError(err, choreName, "", jsonMode)
+	}
+	result := model.ChoreRunResult{
+		Chore:    choreName,
+		Status:   "started",
+		ThreadID: threadID,
+		Message:  fmt.Sprintf("Chore '%s' started asynchronously.", choreName),
+	}
+	if jsonMode {
+		output.PrintJSON(result)
+	} else {
+		fmt.Printf("Chore '%s' started asynchronously.\n", choreName)
+		fmt.Printf("  Thread ID: %s\n", threadID)
+	}
+	return nil
+}
+
+func runChoreSync(cl *client.Client, choreName, endpoint string, jsonMode bool) error {
+	cl.SetTimeout(choreRunTimeout) // MUST run before Post.
+
+	start := time.Now()
+	_, err := cl.Post(endpoint, map[string]interface{}{})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		return handleChoreRunError(err, choreName, choreRunTimeout.String(), jsonMode)
+	}
+
+	result := model.ChoreRunResult{
+		Chore:      choreName,
+		Status:     "completed",
+		DurationMs: elapsed.Milliseconds(),
+		Message:    fmt.Sprintf("Chore '%s' executed successfully.", choreName),
+	}
+	if jsonMode {
+		output.PrintJSON(result)
+	} else {
+		fmt.Printf("Chore '%s' executed successfully.\n", choreName)
+		fmt.Printf("  Status:   Completed\n")
+		fmt.Printf("  Duration: %.1fs\n", elapsed.Seconds())
+	}
+	return nil
+}
+
+func handleChoreRunError(err error, choreName, timeout string, jsonMode bool) error {
+	if errors.Is(err, client.ErrNotFound) {
+		emitChoreError(choreName, "not_found", "",
+			fmt.Sprintf("Chore '%s' not found.", choreName), jsonMode)
+		return errExit(3)
+	}
+	if strings.HasPrefix(err.Error(), "HTTP 403") {
+		emitChoreError(choreName, "forbidden", "",
+			"Permission denied. Running chores requires admin privileges.", jsonMode)
+		return errSilent
+	}
+	if errors.Is(err, client.ErrTimeout) {
+		emitChoreError(choreName, "timeout", timeout,
+			fmt.Sprintf("Chore '%s' did not complete within %s.", choreName, timeout), jsonMode)
+		return errExit(4)
+	}
+	emitChoreError(choreName, "error", "", err.Error(), jsonMode)
+	return errSilent
+}
+
+// emitChoreError unifies the error-output shape so JSON mode always emits a
+// single ChoreRunResult on stdout (matching the success path) and text mode
+// always emits a human-readable line on stderr.
+func emitChoreError(choreName, status, timeout, message string, jsonMode bool) {
+	if jsonMode {
+		output.PrintJSON(model.ChoreRunResult{
+			Chore:   choreName,
+			Status:  status,
+			Timeout: timeout,
+			Message: message,
+		})
+		return
+	}
+	output.PrintError(message, false)
+}
+
+func printChoreTasksPreflight(cl *client.Client, choreName string) error {
+	endpoint := choreEndpoint(choreName, "") +
+		"?$select=Name&$expand=Tasks($expand=Process($select=Name))"
+	data, err := cl.Get(endpoint)
+	if err != nil {
+		return err
+	}
+	var chore model.ChoreWithTasks
+	if jsonErr := json.Unmarshal(data, &chore); jsonErr != nil {
+		return fmt.Errorf("cannot parse chore: %w", jsonErr)
+	}
+	fmt.Fprintf(os.Stderr, "Chore '%s' has %d task(s):\n", chore.Name, len(chore.Tasks))
+	for i, t := range chore.Tasks {
+		step := t.Step
+		if step == 0 {
+			step = i + 1
+		}
+		fmt.Fprintf(os.Stderr, "  [%d] %s\n", step, t.Process.Name)
+	}
+	return nil
+}
+
 func init() {
 	rootCmd.AddCommand(choresCmd)
 	choresCmd.AddCommand(choresListCmd)
 	choresCmd.AddCommand(choresShowCmd)
 	choresCmd.AddCommand(choresActivateCmd)
 	choresCmd.AddCommand(choresDeactivateCmd)
+	choresCmd.AddCommand(choresRunCmd)
 
 	choresListCmd.Flags().StringVar(&choresFilter, "filter", "", "Filter by name (case-insensitive, partial match)")
 	choresListCmd.Flags().BoolVar(&choresActive, "active", false, "Show only active chores")
@@ -632,4 +811,9 @@ func init() {
 
 	choresDeactivateCmd.Flags().BoolVar(&choresDeactivateYes, "yes", false, "Skip confirmation prompt")
 	choresDeactivateCmd.Flags().BoolVar(&choresDeactivateDryRun, "dry-run", false, "Preview the deactivate without sending it")
+
+	choresRunCmd.Flags().BoolVar(&choreRunAsync, "async", false,
+		"Return immediately with the server-side thread ID; do not wait")
+	choresRunCmd.Flags().DurationVar(&choreRunTimeout, "timeout", defaultChoreTimeout,
+		"Maximum time to wait for the chore to complete (sync mode only)")
 }
