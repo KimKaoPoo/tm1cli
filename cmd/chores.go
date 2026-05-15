@@ -656,19 +656,19 @@ func runChoresRun(cmd *cobra.Command, args []string) error {
 
 	cfg, err := loadConfig()
 	if err != nil {
-		output.PrintError(err.Error(), isJSONOutput(nil))
+		emitChoreError(choreName, "error", "", err.Error(), isJSONOutput(nil))
 		return errSilent
 	}
 	jsonMode := isJSONOutput(cfg)
 
 	if !choreRunAsync && choreRunTimeout <= 0 {
-		output.PrintError("--timeout must be greater than zero.", jsonMode)
+		emitChoreError(choreName, "error", "", "--timeout must be greater than zero.", jsonMode)
 		return errSilent
 	}
 
 	cl, err := createClient(cfg)
 	if err != nil {
-		output.PrintError(err.Error(), jsonMode)
+		emitChoreError(choreName, "error", "", err.Error(), jsonMode)
 		return errSilent
 	}
 

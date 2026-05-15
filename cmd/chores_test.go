@@ -1890,6 +1890,37 @@ func TestRunChoresRun_TimeoutZero(t *testing.T) {
 	}
 }
 
+func TestRunChoresRun_TimeoutZero_JSON(t *testing.T) {
+	resetCmdFlags(t)
+	flagOutput = "json"
+	choreRunTimeout = 0
+
+	var err error
+	cap := captureAll(t, func() {
+		err = runChoresRun(choresRunCmd, []string{"Nightly"})
+	})
+
+	if exitCodeForError(err) != 1 {
+		t.Errorf("exit code = %d, want 1", exitCodeForError(err))
+	}
+	var result model.ChoreRunResult
+	if jsonErr := json.Unmarshal([]byte(cap.Stdout), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\nstdout: %s", jsonErr, cap.Stdout)
+	}
+	if result.Status != "error" {
+		t.Errorf("Status = %q, want %q", result.Status, "error")
+	}
+	if result.Chore != "Nightly" {
+		t.Errorf("Chore = %q, want %q", result.Chore, "Nightly")
+	}
+	if !strings.Contains(result.Message, "--timeout must be greater than zero.") {
+		t.Errorf("Message = %q, want timeout-zero text", result.Message)
+	}
+	if cap.Stderr != "" {
+		t.Errorf("stderr should be empty in JSON mode, got: %q", cap.Stderr)
+	}
+}
+
 func TestRunChoresRun_AsyncServerIgnoredPrefer(t *testing.T) {
 	resetCmdFlags(t)
 	choreRunAsync = true
