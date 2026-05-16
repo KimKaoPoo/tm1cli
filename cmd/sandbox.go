@@ -21,9 +21,10 @@ var (
 )
 
 var sandboxCmd = &cobra.Command{
-	Use:   "sandbox",
-	Short: "Manage TM1 sandboxes",
-	Long:  `Manage and inspect TM1 sandboxes.`,
+	Use:          "sandbox",
+	Short:        "Manage TM1 sandboxes",
+	Long:         `Manage and inspect TM1 sandboxes.`,
+	SilenceUsage: true,
 }
 
 var sandboxListCmd = &cobra.Command{
@@ -39,8 +40,9 @@ Results are limited to 50 by default. Use --all to show everything.`,
   tm1cli sandbox list --active
   tm1cli sandbox list --filter "fy24"
   tm1cli sandbox list --output json`,
-	Args: cobra.NoArgs,
-	RunE: runSandboxList,
+	Args:         cobra.NoArgs,
+	RunE:         runSandboxList,
+	SilenceUsage: true,
 }
 
 var sandboxCreateCmd = &cobra.Command{
@@ -51,8 +53,9 @@ var sandboxCreateCmd = &cobra.Command{
 REST API: POST /Sandboxes`,
 	Example: `  tm1cli sandbox create FY24Plan
   tm1cli sandbox create FY24Plan --output json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runSandboxCreate,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runSandboxCreate,
+	SilenceUsage: true,
 }
 
 func runSandboxList(cmd *cobra.Command, args []string) error {
@@ -159,6 +162,9 @@ func displaySandboxes(sandboxes []model.Sandbox, total int, limit int, jsonMode 
 		shown = shown[:limit]
 	}
 	if jsonMode {
+		if shown == nil {
+			shown = []model.Sandbox{}
+		}
 		output.PrintJSON(shown)
 		return
 	}

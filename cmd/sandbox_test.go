@@ -586,6 +586,38 @@ func TestRunSandboxList_TruncationSummary(t *testing.T) {
 	}
 }
 
+func TestRunSandboxList_JSONEmptyArrayWhenFilterStripsAll(t *testing.T) {
+	resetCmdFlags(t)
+	sandboxListLoaded = true
+	flagOutput = "json"
+
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(sandboxesJSON(
+			model.Sandbox{Name: "NotLoaded1"},
+			model.Sandbox{Name: "NotLoaded2"},
+		))
+	})
+
+	captured := captureAll(t, func() {
+		if err := runSandboxList(sandboxListCmd, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	trimmed := strings.TrimSpace(captured.Stdout)
+	if trimmed == "null" {
+		t.Fatalf("JSON output should be [] when filter strips everything, got null (downstream jq/array consumers break)")
+	}
+	var parsed []model.Sandbox
+	if err := json.Unmarshal([]byte(captured.Stdout), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON array: %v\noutput: %s", err, captured.Stdout)
+	}
+	if len(parsed) != 0 {
+		t.Errorf("expected empty array, got %d entries", len(parsed))
+	}
+}
+
 func TestRunSandboxList_CountReflectsActualTotal(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxListCount = true
