@@ -213,6 +213,24 @@ tm1cli chores show "DailyLoad" --output json
 `Every 1 day`); JSON preserves the raw ISO 8601 duration. `chores show`
 exits with code 3 when the named chore does not exist.
 
+### Sandboxes
+
+```bash
+tm1cli sandbox list                       # list sandboxes (NAME, IN SANDBOX DIM, LOADED, ACTIVE, QUEUED)
+tm1cli sandbox list --loaded              # only sandboxes currently loaded in memory
+tm1cli sandbox list --active              # only sandboxes the current user has active
+tm1cli sandbox list --filter "fy24"       # filter by name (partial, case-insensitive)
+tm1cli sandbox list --count               # row count only
+tm1cli sandbox list --all                 # no 50-row limit
+tm1cli sandbox list --output json         # raw sandbox objects
+
+tm1cli sandbox create FY24Plan            # create a new sandbox
+tm1cli sandbox create FY24Plan --output json
+```
+
+`sandbox create` reports a clear "already exists" error when the name is
+taken (TM1 returns HTTP 400 or 409 depending on version).
+
 ### Logs
 
 ```bash
