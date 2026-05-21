@@ -391,8 +391,11 @@ func runSandboxMerge(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else {
+		// tm1.Merge is bound to the source via the URL path
+		// (Sandboxes('source')/tm1.Merge), so Source@odata.bind is
+		// redundant in the body. Send only the Target binding and
+		// CleanAfter — some TM1 versions reject the extra Source field.
 		payload := map[string]interface{}{
-			"Source@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(name)),
 			"Target@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(target)),
 			"CleanAfter":        sandboxMergeClean,
 		}

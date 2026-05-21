@@ -1116,7 +1116,8 @@ func TestRunSandboxMerge_PostsToNamedTarget(t *testing.T) {
 	sandboxMergeTarget = "FY24Forecast"
 
 	bodies := []map[string]interface{}{}
-	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{postBodies: &bodies}))
+	paths := []string{}
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{postBodies: &bodies, postPaths: &paths}))
 
 	captureAll(t, func() {
 		if err := runSandboxMerge(sandboxMergeCmd, []string{"FY24Plan"}); err != nil {
@@ -1124,8 +1125,15 @@ func TestRunSandboxMerge_PostsToNamedTarget(t *testing.T) {
 		}
 	})
 
+	if !strings.Contains(paths[0], "Sandboxes('FY24Plan')/tm1.Merge") {
+		t.Errorf("path = %q, want Sandboxes('FY24Plan')/tm1.Merge", paths[0])
+	}
 	if bodies[0]["Target@odata.bind"] != "Sandboxes('FY24Forecast')" {
 		t.Errorf("Target@odata.bind = %v, want Sandboxes('FY24Forecast')", bodies[0]["Target@odata.bind"])
+	}
+	// Source is bound via the URL path on tm1.Merge — must not also appear in the body.
+	if _, has := bodies[0]["Source@odata.bind"]; has {
+		t.Errorf("body should not include Source@odata.bind (action is bound to source via URL), got: %v", bodies[0])
 	}
 }
 
