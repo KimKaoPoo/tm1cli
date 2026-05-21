@@ -274,6 +274,12 @@ func zeroAllFlags() {
 	sandboxListCount = false
 	sandboxListLoaded = false
 	sandboxListActive = false
+	sandboxMergeYes = false
+	sandboxMergeClean = false
+	sandboxMergeTarget = ""
+	sandboxMergeDryRun = false
+	sandboxDeleteYes = false
+	sandboxDeleteDryRun = false
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.
