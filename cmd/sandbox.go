@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -32,14 +31,6 @@ var (
 	sandboxDeleteYes    bool
 	sandboxDeleteDryRun bool
 )
-
-// sandboxKey encodes a sandbox name for use as an OData URL key:
-// OData single-quote-doubling, then URL path-escape. Use only for URL
-// paths. For JSON odata.bind values, apply odataEscape directly — the
-// path-escape would corrupt the binding reference.
-func sandboxKey(name string) string {
-	return url.PathEscape(odataEscape(name))
-}
 
 var sandboxCmd = &cobra.Command{
 	Use:          "sandbox",
@@ -382,7 +373,7 @@ func runSandboxMerge(cmd *cobra.Command, args []string) error {
 		"CleanAfter":        sandboxMergeClean,
 	}
 
-	endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Merge", sandboxKey(name))
+	endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Merge", odataKey(name))
 	body, postErr := cl.Post(endpoint, payload)
 	if postErr != nil {
 		return handleSandboxMergeError(postErr, body, name, jsonMode)
@@ -442,7 +433,7 @@ func runSandboxDelete(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	endpoint := fmt.Sprintf("Sandboxes('%s')", sandboxKey(name))
+	endpoint := fmt.Sprintf("Sandboxes('%s')", odataKey(name))
 	if delErr := cl.Delete(endpoint); delErr != nil {
 		return handleSandboxDeleteError(delErr, name, jsonMode)
 	}

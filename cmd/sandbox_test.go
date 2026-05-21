@@ -898,29 +898,6 @@ func TestRunSandboxCreate_GenericServerError(t *testing.T) {
 }
 
 // ============================================================
-// Unit — sandboxKey
-// ============================================================
-
-func TestSandboxKey(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"plain name unchanged", "FY24Plan", "FY24Plan"},
-		{"single quote doubled then path-escaped", "O'Brien", "O%27%27Brien"},
-		{"empty input returns empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sandboxKey(tt.in); got != tt.want {
-				t.Errorf("sandboxKey(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
-// ============================================================
 // Unit — isSandboxLockedError
 // ============================================================
 
