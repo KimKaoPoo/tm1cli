@@ -643,6 +643,40 @@ func TestRunSandboxList_CountReflectsActualTotal(t *testing.T) {
 	}
 }
 
+// Regression: when --count is set and the server has more than limit+500
+// rows, the result must still reflect the real total. Earlier code sent
+// $top=limit+500 unconditionally, silently capping the displayed count at
+// the over-fetch cap (e.g. 550) instead of the actual server total.
+func TestRunSandboxList_CountAboveOverFetchCap(t *testing.T) {
+	resetCmdFlags(t)
+	sandboxListCount = true
+
+	boxes := make([]model.Sandbox, 600)
+	for i := range boxes {
+		boxes[i] = model.Sandbox{Name: fmt.Sprintf("Box%03d", i)}
+	}
+
+	var capturedQuery string
+	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(sandboxesJSON(boxes...))
+	})
+
+	captured := captureAll(t, func() {
+		if err := runSandboxList(sandboxListCmd, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if strings.Contains(capturedQuery, "$top=") {
+		t.Errorf("request must not include $top= when --count is set, got query: %s", capturedQuery)
+	}
+	if !strings.Contains(captured.Stdout, "600 sandboxes") {
+		t.Errorf("--count must report 600 (actual total), not the over-fetch cap; got:\n%s", captured.Stdout)
+	}
+}
+
 // ============================================================
 // Integration — runSandboxCreate
 // ============================================================
