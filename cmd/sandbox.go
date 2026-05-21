@@ -92,10 +92,11 @@ func runSandboxList(cmd *cobra.Command, args []string) error {
 	}
 
 	fetchEndpoint := endpoint
-	if limit > 0 && !activeFilters {
+	if limit > 0 && !activeFilters && !sandboxListCount {
 		// Over-fetch above --limit so PrintSummary can report "Showing N of M"
-		// when the server has more than --limit rows; otherwise --count would
-		// silently cap at --limit and the truncation summary would never fire.
+		// when the server has more than --limit rows; otherwise the truncation
+		// summary would never fire. Skip $top entirely when --count is set so
+		// the displayed total is the real server total, not the over-fetch cap.
 		fetchEndpoint += fmt.Sprintf("&$top=%d", limit+500)
 	}
 
