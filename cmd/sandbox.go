@@ -367,29 +367,59 @@ func runSandboxMerge(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	payload := map[string]interface{}{
-		"Source@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(name)),
-		"Target@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(target)),
-		"CleanAfter":        sandboxMergeClean,
-	}
-
-	endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Merge", odataKey(name))
-	body, postErr := cl.Post(endpoint, payload)
-	if postErr != nil {
-		return handleSandboxMergeError(postErr, body, name, jsonMode)
+	cleaned := false
+	if target == "" {
+		// Merge to base routes through TM1's dedicated tm1.Publish action,
+		// which does not require a Target binding. (tm1.Merge with an
+		// empty-string Target — e.g. Sandboxes('') — is not portable
+		// across TM1 versions because an empty OData key is invalid.)
+		// tm1.Publish has no CleanAfter parameter, so the --clean
+		// semantics are implemented as an explicit DELETE on the source
+		// after a successful Publish.
+		endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Publish", odataKey(name))
+		body, postErr := cl.Post(endpoint, map[string]interface{}{})
+		if postErr != nil {
+			return handleSandboxMergeError(postErr, body, name, jsonMode)
+		}
+		if sandboxMergeClean {
+			if delErr := cl.Delete(fmt.Sprintf("Sandboxes('%s')", odataKey(name))); delErr != nil {
+				// Publish already succeeded — surface the cleanup failure
+				// as a warning rather than failing the whole operation.
+				output.PrintWarning(fmt.Sprintf("Sandbox '%s' published to base but cleanup DELETE failed: %s", name, delErr.Error()))
+			} else {
+				cleaned = true
+			}
+		}
+	} else {
+		payload := map[string]interface{}{
+			"Source@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(name)),
+			"Target@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(target)),
+			"CleanAfter":        sandboxMergeClean,
+		}
+		endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Merge", odataKey(name))
+		body, postErr := cl.Post(endpoint, payload)
+		if postErr != nil {
+			return handleSandboxMergeError(postErr, body, name, jsonMode)
+		}
+		cleaned = sandboxMergeClean
 	}
 
 	if jsonMode {
 		output.PrintJSON(map[string]interface{}{
-			"status": "merged",
-			"source": name,
-			"target": target,
-			"clean":  sandboxMergeClean,
+			"status":  "merged",
+			"source":  name,
+			"target":  target,
+			"clean":   sandboxMergeClean,
+			"cleaned": cleaned,
 		})
 	} else {
 		cleanPart := ""
 		if sandboxMergeClean {
-			cleanPart = " (source cleaned)"
+			if cleaned {
+				cleanPart = " (source cleaned)"
+			} else {
+				cleanPart = " (source cleanup failed)"
+			}
 		}
 		fmt.Printf("Merged sandbox '%s' into %s%s.\n", name, targetLabel, cleanPart)
 	}

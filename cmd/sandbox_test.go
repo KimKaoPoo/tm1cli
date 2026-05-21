@@ -958,55 +958,75 @@ func TestIsSandboxMergeConflictError(t *testing.T) {
 // ============================================================
 
 // mergeHandlerOpts captures the merge mock behaviour. status overrides
-// the default 200 OK; body overrides the default empty JSON.
+// the default 200 OK for the merge/publish POST; body overrides the
+// default empty JSON. Base-merge routes through tm1.Publish (no body)
+// and may issue a follow-up DELETE on the source for --clean — both are
+// captured by this handler.
 type mergeHandlerOpts struct {
-	status     int
-	body       string
-	posts      *int
-	postPaths  *[]string
-	postBodies *[]map[string]interface{}
+	status      int
+	body        string
+	posts       *int
+	postPaths   *[]string
+	postBodies  *[]map[string]interface{}
+	deletes     *int
+	deletePaths *[]string
+	deleteStatus int // status returned for follow-up DELETE; 0 → 204
 }
 
 func newMergeHandler(opts mergeHandlerOpts) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.Contains(r.URL.Path, "/tm1.Merge") {
+		switch {
+		case r.Method == http.MethodPost && (strings.Contains(r.URL.Path, "/tm1.Merge") || strings.Contains(r.URL.Path, "/tm1.Publish")):
+			if opts.posts != nil {
+				*opts.posts++
+			}
+			if opts.postPaths != nil {
+				*opts.postPaths = append(*opts.postPaths, r.URL.Path)
+			}
+			if opts.postBodies != nil {
+				raw, _ := io.ReadAll(r.Body)
+				var parsed map[string]interface{}
+				_ = json.Unmarshal(raw, &parsed)
+				*opts.postBodies = append(*opts.postBodies, parsed)
+			}
+			status := opts.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			w.WriteHeader(status)
+			if opts.body != "" {
+				w.Write([]byte(opts.body))
+			} else {
+				w.Write([]byte(`{}`))
+			}
+		case r.Method == http.MethodDelete:
+			if opts.deletes != nil {
+				*opts.deletes++
+			}
+			if opts.deletePaths != nil {
+				*opts.deletePaths = append(*opts.deletePaths, r.URL.Path)
+			}
+			status := opts.deleteStatus
+			if status == 0 {
+				status = http.StatusNoContent
+			}
+			w.WriteHeader(status)
+		default:
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"unexpected route"}`))
-			return
-		}
-		if opts.posts != nil {
-			*opts.posts++
-		}
-		if opts.postPaths != nil {
-			*opts.postPaths = append(*opts.postPaths, r.URL.Path)
-		}
-		if opts.postBodies != nil {
-			raw, _ := io.ReadAll(r.Body)
-			var parsed map[string]interface{}
-			_ = json.Unmarshal(raw, &parsed)
-			*opts.postBodies = append(*opts.postBodies, parsed)
-		}
-		status := opts.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		w.WriteHeader(status)
-		if opts.body != "" {
-			w.Write([]byte(opts.body))
-		} else {
-			w.Write([]byte(`{}`))
 		}
 	}
 }
 
-func TestRunSandboxMerge_PostsToBaseByDefault(t *testing.T) {
+func TestRunSandboxMerge_BaseUsesPublishAction(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxMergeYes = true
 
 	posts := 0
 	paths := []string{}
 	bodies := []map[string]interface{}{}
-	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{posts: &posts, postPaths: &paths, postBodies: &bodies}))
+	deletes := 0
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{posts: &posts, postPaths: &paths, postBodies: &bodies, deletes: &deletes}))
 
 	captureAll(t, func() {
 		if err := runSandboxMerge(sandboxMergeCmd, []string{"FY24Plan"}); err != nil {
@@ -1017,17 +1037,76 @@ func TestRunSandboxMerge_PostsToBaseByDefault(t *testing.T) {
 	if posts != 1 {
 		t.Fatalf("expected 1 POST, got %d", posts)
 	}
-	if !strings.Contains(paths[0], "Sandboxes('FY24Plan')/tm1.Merge") {
-		t.Errorf("path = %q, want Sandboxes('FY24Plan')/tm1.Merge", paths[0])
+	if !strings.Contains(paths[0], "Sandboxes('FY24Plan')/tm1.Publish") {
+		t.Errorf("path = %q, want Sandboxes('FY24Plan')/tm1.Publish (base merge routes through Publish)", paths[0])
 	}
-	if bodies[0]["Source@odata.bind"] != "Sandboxes('FY24Plan')" {
-		t.Errorf("Source@odata.bind = %v, want Sandboxes('FY24Plan')", bodies[0]["Source@odata.bind"])
+	// tm1.Publish takes no Source/Target/CleanAfter — verify body has no merge fields.
+	if _, has := bodies[0]["Source@odata.bind"]; has {
+		t.Errorf("publish body should not include Source@odata.bind, got: %v", bodies[0])
 	}
-	if bodies[0]["Target@odata.bind"] != "Sandboxes('')" {
-		t.Errorf("Target@odata.bind = %v, want Sandboxes('') for base", bodies[0]["Target@odata.bind"])
+	if _, has := bodies[0]["Target@odata.bind"]; has {
+		t.Errorf("publish body should not include Target@odata.bind, got: %v", bodies[0])
 	}
-	if bodies[0]["CleanAfter"] != false {
-		t.Errorf("CleanAfter = %v, want false", bodies[0]["CleanAfter"])
+	if deletes != 0 {
+		t.Errorf("expected zero DELETE without --clean, got %d", deletes)
+	}
+}
+
+func TestRunSandboxMerge_BaseCleanIssuesFollowupDelete(t *testing.T) {
+	resetCmdFlags(t)
+	sandboxMergeYes = true
+	sandboxMergeClean = true
+
+	posts := 0
+	postPaths := []string{}
+	deletes := 0
+	deletePaths := []string{}
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{
+		posts:       &posts,
+		postPaths:   &postPaths,
+		deletes:     &deletes,
+		deletePaths: &deletePaths,
+	}))
+
+	cap := captureAll(t, func() {
+		if err := runSandboxMerge(sandboxMergeCmd, []string{"FY24Plan"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	if posts != 1 || !strings.Contains(postPaths[0], "tm1.Publish") {
+		t.Errorf("expected 1 Publish POST, got %d posts paths=%v", posts, postPaths)
+	}
+	if deletes != 1 {
+		t.Fatalf("expected 1 DELETE for --clean cleanup, got %d", deletes)
+	}
+	if !strings.Contains(deletePaths[0], "Sandboxes('FY24Plan')") {
+		t.Errorf("DELETE path = %q, want Sandboxes('FY24Plan')", deletePaths[0])
+	}
+	if !strings.Contains(cap.Stdout, "(source cleaned)") {
+		t.Errorf("stdout should report source cleaned, got: %s", cap.Stdout)
+	}
+}
+
+func TestRunSandboxMerge_BaseCleanFailureWarnsAndSucceeds(t *testing.T) {
+	resetCmdFlags(t)
+	sandboxMergeYes = true
+	sandboxMergeClean = true
+
+	// Publish succeeds; cleanup DELETE fails with 500.
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{deleteStatus: http.StatusInternalServerError}))
+
+	cap := captureAll(t, func() {
+		if err := runSandboxMerge(sandboxMergeCmd, []string{"FY24Plan"}); err != nil {
+			t.Fatalf("merge should still succeed even if cleanup fails, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(cap.Stderr, "cleanup DELETE failed") {
+		t.Errorf("stderr should warn about cleanup failure, got: %s", cap.Stderr)
+	}
+	if !strings.Contains(cap.Stdout, "source cleanup failed") {
+		t.Errorf("stdout should reflect cleanup-failed status, got: %s", cap.Stdout)
 	}
 }
 
@@ -1050,13 +1129,15 @@ func TestRunSandboxMerge_PostsToNamedTarget(t *testing.T) {
 	}
 }
 
-func TestRunSandboxMerge_CleanAfterTrueWhenFlagSet(t *testing.T) {
+func TestRunSandboxMerge_NamedTargetCleanAfterTrue(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxMergeYes = true
 	sandboxMergeClean = true
+	sandboxMergeTarget = "FY24Forecast"
 
 	bodies := []map[string]interface{}{}
-	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{postBodies: &bodies}))
+	paths := []string{}
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{postBodies: &bodies, postPaths: &paths}))
 
 	cap := captureAll(t, func() {
 		if err := runSandboxMerge(sandboxMergeCmd, []string{"FY24Plan"}); err != nil {
@@ -1064,6 +1145,9 @@ func TestRunSandboxMerge_CleanAfterTrueWhenFlagSet(t *testing.T) {
 		}
 	})
 
+	if !strings.Contains(paths[0], "tm1.Merge") {
+		t.Errorf("path = %q, want tm1.Merge for named target", paths[0])
+	}
 	if bodies[0]["CleanAfter"] != true {
 		t.Errorf("CleanAfter = %v, want true", bodies[0]["CleanAfter"])
 	}
@@ -1222,6 +1306,7 @@ func TestRunSandboxMerge_NotFoundExits3(t *testing.T) {
 func TestRunSandboxMerge_MergeConflictMessage(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxMergeYes = true
+	sandboxMergeTarget = "FY24Forecast" // merge conflict only meaningful for tm1.Merge (named target)
 	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{
 		status: http.StatusBadRequest,
 		body:   `{"error":{"message":"Sandbox cannot be merged due to conflict."}}`,
@@ -1262,6 +1347,7 @@ func TestRunSandboxMerge_LockedByUserMessage(t *testing.T) {
 func TestRunSandboxMerge_LockedTakesPrecedenceOverConflict(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxMergeYes = true
+	sandboxMergeTarget = "FY24Forecast" // precedence check uses tm1.Merge path
 	// Body contains both 'loaded by' and 'conflict' — locked check must win.
 	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{
 		status: http.StatusBadRequest,
