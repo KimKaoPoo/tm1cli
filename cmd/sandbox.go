@@ -316,8 +316,18 @@ func runSandboxMerge(cmd *cobra.Command, args []string) error {
 	}
 	jsonMode := isJSONOutput(cfg)
 
-	if strings.TrimSpace(name) == "" {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		output.PrintError("Sandbox name cannot be empty.", jsonMode)
+		return errSilent
+	}
+
+	// If --target was explicitly set but resolves to empty/whitespace
+	// (e.g. `--target "$TARGET"` in a script with TARGET unset), fail
+	// fast rather than silently routing to the destructive base-merge
+	// path. An unset --target legitimately means "merge to base".
+	if cmd.Flags().Changed("target") && strings.TrimSpace(sandboxMergeTarget) == "" {
+		output.PrintError("--target was set but is empty. Omit --target to merge into the base sandbox, or pass a non-empty target name.", jsonMode)
 		return errSilent
 	}
 

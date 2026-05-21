@@ -13,6 +13,8 @@ import (
 	"tm1cli/internal/config"
 	"tm1cli/internal/model"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/zalando/go-keyring"
 )
 
@@ -280,6 +282,17 @@ func zeroAllFlags() {
 	sandboxMergeDryRun = false
 	sandboxDeleteYes = false
 	sandboxDeleteDryRun = false
+
+	// Reset cobra's per-flag Changed bit so tests that drive commands
+	// through rootCmd.Execute() don't leak flag state into later tests
+	// that inspect cmd.Flags().Changed(...) directly.
+	resetSandboxFlagChanged()
+}
+
+func resetSandboxFlagChanged() {
+	for _, c := range []*cobra.Command{sandboxMergeCmd, sandboxDeleteCmd} {
+		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	}
 }
 
 // cubesJSON returns JSON for a TM1 Cubes response.

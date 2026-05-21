@@ -1164,6 +1164,24 @@ func TestRunSandboxMerge_NamedTargetCleanAfterTrue(t *testing.T) {
 	}
 }
 
+func TestRunSandboxMerge_ExplicitEmptyTargetRejected(t *testing.T) {
+	resetCmdFlags(t)
+	posts := 0
+	setupMockTM1(t, newMergeHandler(mergeHandlerOpts{posts: &posts}))
+
+	cap := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"sandbox", "merge", "FY24Plan", "--yes", "--target", ""})
+		rootCmd.Execute()
+	})
+
+	if posts != 0 {
+		t.Errorf("expected zero POST when --target explicitly empty, got %d", posts)
+	}
+	if !strings.Contains(cap.Stderr, "--target was set but is empty") {
+		t.Errorf("stderr should reject explicit empty --target, got: %s", cap.Stderr)
+	}
+}
+
 func TestRunSandboxMerge_RejectsTargetEqualsSource(t *testing.T) {
 	resetCmdFlags(t)
 	sandboxMergeYes = true
