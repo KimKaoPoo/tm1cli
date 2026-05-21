@@ -963,13 +963,13 @@ func TestIsSandboxMergeConflictError(t *testing.T) {
 // and may issue a follow-up DELETE on the source for --clean — both are
 // captured by this handler.
 type mergeHandlerOpts struct {
-	status      int
-	body        string
-	posts       *int
-	postPaths   *[]string
-	postBodies  *[]map[string]interface{}
-	deletes     *int
-	deletePaths *[]string
+	status       int
+	body         string
+	posts        *int
+	postPaths    *[]string
+	postBodies   *[]map[string]interface{}
+	deletes      *int
+	deletePaths  *[]string
 	deleteStatus int // status returned for follow-up DELETE; 0 → 204
 }
 
