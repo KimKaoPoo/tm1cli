@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"tm1cli/internal/client"
 	"tm1cli/internal/model"
 	"tm1cli/internal/output"
 
@@ -18,6 +22,14 @@ var (
 	sandboxListCount  bool
 	sandboxListLoaded bool
 	sandboxListActive bool
+
+	sandboxMergeYes    bool
+	sandboxMergeClean  bool
+	sandboxMergeTarget string
+	sandboxMergeDryRun bool
+
+	sandboxDeleteYes    bool
+	sandboxDeleteDryRun bool
 )
 
 var sandboxCmd = &cobra.Command{
@@ -55,6 +67,58 @@ REST API: POST /Sandboxes`,
   tm1cli sandbox create FY24Plan --output json`,
 	Args:         cobra.ExactArgs(1),
 	RunE:         runSandboxCreate,
+	SilenceUsage: true,
+}
+
+var sandboxMergeCmd = &cobra.Command{
+	Use:   "merge <name>",
+	Short: "Merge a sandbox into the base (or another sandbox)",
+	Long: `Merge a TM1 sandbox into the base sandbox, or into another named sandbox via --target.
+
+REST API: POST /Sandboxes('name')/tm1.Merge
+
+WARNING: merge applies the source sandbox's pending writes to the target.
+Once merged, the target reflects the combined state. Use --clean to drop
+the source sandbox after a successful merge.
+
+The command prompts for confirmation by default. Use --yes to skip the
+prompt for scripting. --dry-run takes precedence over --yes.
+
+Exit codes:
+  0  merge completed
+  1  generic error (auth, network, server, conflict, sandbox loaded by another user)
+  3  sandbox not found`,
+	Example: `  tm1cli sandbox merge FY24Plan
+  tm1cli sandbox merge FY24Plan --yes
+  tm1cli sandbox merge FY24Plan --target FY24Forecast
+  tm1cli sandbox merge FY24Plan --clean --yes
+  tm1cli sandbox merge FY24Plan --dry-run`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runSandboxMerge,
+	SilenceUsage: true,
+}
+
+var sandboxDeleteCmd = &cobra.Command{
+	Use:   "delete <name>",
+	Short: "Delete a TM1 sandbox",
+	Long: `Delete a TM1 sandbox by name.
+
+REST API: DELETE /Sandboxes('name')
+
+WARNING: deletion is permanent. Any unmerged writes in the sandbox are lost.
+
+The command prompts for confirmation by default. Use --yes to skip the
+prompt for scripting. --dry-run takes precedence over --yes.
+
+Exit codes:
+  0  sandbox deleted
+  1  generic error (auth, network, server, sandbox loaded by another user)
+  3  sandbox not found`,
+	Example: `  tm1cli sandbox delete FY24Plan
+  tm1cli sandbox delete FY24Plan --yes
+  tm1cli sandbox delete FY24Plan --dry-run --output json`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runSandboxDelete,
 	SilenceUsage: true,
 }
 
@@ -242,10 +306,273 @@ func isDuplicateSandboxError(body []byte, err error) bool {
 	return strings.Contains(combined, "already exists") || strings.Contains(combined, "duplicate")
 }
 
+func runSandboxMerge(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	cfg, err := loadConfig()
+	if err != nil {
+		output.PrintError(err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+	jsonMode := isJSONOutput(cfg)
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		output.PrintError("Sandbox name cannot be empty.", jsonMode)
+		return errSilent
+	}
+
+	// If --target was explicitly set but resolves to empty/whitespace
+	// (e.g. `--target "$TARGET"` in a script with TARGET unset), fail
+	// fast rather than silently routing to the destructive base-merge
+	// path. An unset --target legitimately means "merge to base".
+	if cmd.Flags().Changed("target") && strings.TrimSpace(sandboxMergeTarget) == "" {
+		output.PrintError("--target was set but is empty. Omit --target to merge into the base sandbox, or pass a non-empty target name.", jsonMode)
+		return errSilent
+	}
+
+	target := strings.TrimSpace(sandboxMergeTarget)
+	if target == name {
+		output.PrintError("--target cannot equal the source sandbox name.", jsonMode)
+		return errSilent
+	}
+
+	targetLabel := "base"
+	if target != "" {
+		targetLabel = fmt.Sprintf("sandbox '%s'", target)
+	}
+
+	if sandboxMergeDryRun {
+		if jsonMode {
+			output.PrintJSON(map[string]interface{}{
+				"status": "dry-run",
+				"source": name,
+				"target": target,
+				"clean":  sandboxMergeClean,
+			})
+		} else {
+			cleanPart := ""
+			if sandboxMergeClean {
+				cleanPart = " and clean source after merge"
+			}
+			fmt.Printf("[dry-run] Would merge sandbox '%s' into %s%s.\n", name, targetLabel, cleanPart)
+		}
+		return nil
+	}
+
+	if !sandboxMergeYes {
+		cleanPart := ""
+		if sandboxMergeClean {
+			cleanPart = " (source will be cleaned after merge)"
+		}
+		fmt.Fprintf(os.Stderr, "About to merge sandbox '%s' into %s%s.\n", name, targetLabel, cleanPart)
+		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
+			return nil
+		}
+	}
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), jsonMode)
+		return errSilent
+	}
+
+	cleaned := false
+	if target == "" {
+		// Merge to base routes through TM1's dedicated tm1.Publish action,
+		// which does not require a Target binding. (tm1.Merge with an
+		// empty-string Target — e.g. Sandboxes('') — is not portable
+		// across TM1 versions because an empty OData key is invalid.)
+		// tm1.Publish has no CleanAfter parameter, so the --clean
+		// semantics are implemented as an explicit DELETE on the source
+		// after a successful Publish.
+		endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Publish", odataKey(name))
+		body, postErr := cl.Post(endpoint, map[string]interface{}{})
+		if postErr != nil {
+			return handleSandboxMergeError(postErr, body, name, jsonMode)
+		}
+		if sandboxMergeClean {
+			if delErr := cl.Delete(fmt.Sprintf("Sandboxes('%s')", odataKey(name))); delErr != nil {
+				// Publish already succeeded — surface the cleanup failure
+				// as a warning rather than failing the whole operation.
+				output.PrintWarning(fmt.Sprintf("Sandbox '%s' published to base but cleanup DELETE failed: %s", name, delErr.Error()))
+			} else {
+				cleaned = true
+			}
+		}
+	} else {
+		// tm1.Merge is bound to the source via the URL path
+		// (Sandboxes('source')/tm1.Merge), so Source@odata.bind is
+		// redundant in the body. Send only the Target binding and
+		// CleanAfter — some TM1 versions reject the extra Source field.
+		payload := map[string]interface{}{
+			"Target@odata.bind": fmt.Sprintf("Sandboxes('%s')", odataEscape(target)),
+			"CleanAfter":        sandboxMergeClean,
+		}
+		endpoint := fmt.Sprintf("Sandboxes('%s')/tm1.Merge", odataKey(name))
+		body, postErr := cl.Post(endpoint, payload)
+		if postErr != nil {
+			return handleSandboxMergeError(postErr, body, name, jsonMode)
+		}
+		cleaned = sandboxMergeClean
+	}
+
+	if jsonMode {
+		output.PrintJSON(map[string]interface{}{
+			"status":  "merged",
+			"source":  name,
+			"target":  target,
+			"clean":   sandboxMergeClean,
+			"cleaned": cleaned,
+		})
+	} else {
+		cleanPart := ""
+		if sandboxMergeClean {
+			if cleaned {
+				cleanPart = " (source cleaned)"
+			} else {
+				cleanPart = " (source cleanup failed)"
+			}
+		}
+		fmt.Printf("Merged sandbox '%s' into %s%s.\n", name, targetLabel, cleanPart)
+	}
+	return nil
+}
+
+func runSandboxDelete(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	cfg, err := loadConfig()
+	if err != nil {
+		output.PrintError(err.Error(), isJSONOutput(nil))
+		return errSilent
+	}
+	jsonMode := isJSONOutput(cfg)
+
+	if strings.TrimSpace(name) == "" {
+		output.PrintError("Sandbox name cannot be empty.", jsonMode)
+		return errSilent
+	}
+
+	if sandboxDeleteDryRun {
+		if jsonMode {
+			output.PrintJSON(map[string]string{"status": "dry-run", "name": name})
+		} else {
+			fmt.Printf("[dry-run] Would delete sandbox '%s'.\n", name)
+		}
+		return nil
+	}
+
+	if !sandboxDeleteYes {
+		fmt.Fprintf(os.Stderr, "About to permanently delete sandbox '%s'. Unmerged writes will be lost.\n", name)
+		if !promptYesNo(bufio.NewReader(os.Stdin), "Continue?") {
+			return nil
+		}
+	}
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), jsonMode)
+		return errSilent
+	}
+
+	endpoint := fmt.Sprintf("Sandboxes('%s')", odataKey(name))
+	if delErr := cl.Delete(endpoint); delErr != nil {
+		return handleSandboxDeleteError(delErr, name, jsonMode)
+	}
+
+	if jsonMode {
+		output.PrintJSON(map[string]string{"status": "deleted", "name": name})
+	} else {
+		fmt.Printf("Deleted sandbox '%s'.\n", name)
+	}
+	return nil
+}
+
+// handleSandboxMergeError funnels merge failures through one place. The
+// "loaded by another user" check runs before the merge-conflict check
+// because it's a more specific failure mode — TM1 may return a body
+// containing both keywords, and the lock-message is more actionable.
+func handleSandboxMergeError(err error, body []byte, name string, jsonMode bool) error {
+	if errors.Is(err, client.ErrNotFound) {
+		output.PrintError(fmt.Sprintf("Sandbox '%s' not found.", name), jsonMode)
+		return errExit(3)
+	}
+	if strings.HasPrefix(err.Error(), "HTTP 403") {
+		output.PrintError("Permission denied. Merging sandboxes requires admin or owner privileges.", jsonMode)
+		return errSilent
+	}
+	if isSandboxLockedError(body, err) {
+		output.PrintError(fmt.Sprintf("Sandbox '%s' is loaded by another user. Wait for it to be unloaded and retry.", name), jsonMode)
+		return errSilent
+	}
+	if isSandboxMergeConflictError(body, err) {
+		output.PrintError(fmt.Sprintf("Merge conflict on sandbox '%s'. Resolve conflicting changes and retry.", name), jsonMode)
+		return errSilent
+	}
+	output.PrintError(err.Error(), jsonMode)
+	return errSilent
+}
+
+func handleSandboxDeleteError(err error, name string, jsonMode bool) error {
+	if errors.Is(err, client.ErrNotFound) {
+		output.PrintError(fmt.Sprintf("Sandbox '%s' not found.", name), jsonMode)
+		return errExit(3)
+	}
+	if strings.HasPrefix(err.Error(), "HTTP 403") {
+		output.PrintError("Permission denied. Deleting a sandbox requires admin or owner privileges.", jsonMode)
+		return errSilent
+	}
+	if isSandboxLockedError(nil, err) {
+		output.PrintError(fmt.Sprintf("Sandbox '%s' is loaded by another user. Wait for it to be unloaded and retry.", name), jsonMode)
+		return errSilent
+	}
+	output.PrintError(err.Error(), jsonMode)
+	return errSilent
+}
+
+// isSandboxLockedError reports whether (body, err) indicates the sandbox
+// is loaded by another user. TM1 returns HTTP 400/409 with messages
+// like "Sandbox 'X' is loaded by user 'Y'", "currently loaded", or
+// "is in use". The body is inspected (not only err.Error()) because
+// client.httpError truncates at 200 chars, which can cut off the keyword.
+// body may be nil when only the error string is available (e.g. DELETE).
+func isSandboxLockedError(body []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "HTTP 400") && !strings.HasPrefix(msg, "HTTP 409") {
+		return false
+	}
+	combined := strings.ToLower(msg + " " + string(body))
+	return strings.Contains(combined, "loaded by") ||
+		strings.Contains(combined, "currently loaded") ||
+		strings.Contains(combined, "is in use")
+}
+
+// isSandboxMergeConflictError detects merge-conflict responses. The
+// keyword set is intentionally narrower than isSandboxLockedError so the
+// more-specific locked-by-user message takes precedence when both apply.
+func isSandboxMergeConflictError(body []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "HTTP 400") && !strings.HasPrefix(msg, "HTTP 409") {
+		return false
+	}
+	combined := strings.ToLower(msg + " " + string(body))
+	return strings.Contains(combined, "conflict") ||
+		strings.Contains(combined, "cannot be merged")
+}
+
 func init() {
 	rootCmd.AddCommand(sandboxCmd)
 	sandboxCmd.AddCommand(sandboxListCmd)
 	sandboxCmd.AddCommand(sandboxCreateCmd)
+	sandboxCmd.AddCommand(sandboxMergeCmd)
+	sandboxCmd.AddCommand(sandboxDeleteCmd)
 
 	sandboxListCmd.Flags().StringVar(&sandboxListFilter, "filter", "", "Filter by name (case-insensitive, partial match)")
 	sandboxListCmd.Flags().IntVar(&sandboxListLimit, "limit", 0, "Max results to show (default from settings)")
@@ -253,4 +580,12 @@ func init() {
 	sandboxListCmd.Flags().BoolVar(&sandboxListCount, "count", false, "Show count only")
 	sandboxListCmd.Flags().BoolVar(&sandboxListLoaded, "loaded", false, "Show only sandboxes currently loaded in memory")
 	sandboxListCmd.Flags().BoolVar(&sandboxListActive, "active", false, "Show only sandboxes the current user has active")
+
+	sandboxMergeCmd.Flags().BoolVar(&sandboxMergeYes, "yes", false, "Skip confirmation prompt")
+	sandboxMergeCmd.Flags().BoolVar(&sandboxMergeClean, "clean", false, "Delete the source sandbox after a successful merge")
+	sandboxMergeCmd.Flags().StringVar(&sandboxMergeTarget, "target", "", "Target sandbox name (default: base sandbox)")
+	sandboxMergeCmd.Flags().BoolVar(&sandboxMergeDryRun, "dry-run", false, "Preview the merge without contacting the server")
+
+	sandboxDeleteCmd.Flags().BoolVar(&sandboxDeleteYes, "yes", false, "Skip confirmation prompt")
+	sandboxDeleteCmd.Flags().BoolVar(&sandboxDeleteDryRun, "dry-run", false, "Preview the delete without contacting the server")
 }
