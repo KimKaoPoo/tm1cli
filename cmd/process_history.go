@@ -168,14 +168,15 @@ func runProcessHistory(cmd *cobra.Command, args []string) error {
 	}
 
 	jsonMode := isJSONOutput(cfg)
-	cl, err := createClient(cfg)
-	if err != nil {
-		output.PrintError(err.Error(), jsonMode)
-		return errSilent
-	}
 
 	if procHistTail < 0 {
 		output.PrintError("--tail must be non-negative.", jsonMode)
+		return errSilent
+	}
+
+	cl, err := createClient(cfg)
+	if err != nil {
+		output.PrintError(err.Error(), jsonMode)
 		return errSilent
 	}
 
