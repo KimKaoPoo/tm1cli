@@ -29,15 +29,16 @@ var (
 var processHistoryCmd = &cobra.Command{
 	Use:   "history <name>",
 	Short: "Show recent runs (error logs) of a TI process",
-	Long: `Show recent runs of a TI process from its error logs.
+	Long: `Show recent runs of a TI process from its error-log files.
 
-REST API: GET /Processes('name')/ErrorLogs
+REST API: GET /ErrorLogFiles (filtered client-side to this process by the
+canonical TM1ProcessError_<timestamp>_<name>.log filename pattern).
 
-TM1 exposes per-process run history only as error logs — i.e. failed or
-aborted runs. This source needs no audit/message logging, so it works even
-when those are disabled. It does NOT expose the user or duration of a run,
-so those columns show "-", and every row's status is "Error". For that
-reason --only-failures is effectively a compatibility no-op here.
+TM1 records each failed/aborted process run as an error-log file on the
+server. This source needs no audit/message logging, so it works even when
+those are disabled. The endpoint does NOT expose the user or duration of a
+run, so those columns show "-", and every row's status is "Error" — for
+that reason --only-failures is effectively a compatibility no-op here.
 
 Use --show-error <logfile> to dump the full content of one error-log file
 listed in the history (via GET /ErrorLogFiles('<file>')/Content). When set,
@@ -53,28 +54,64 @@ it takes precedence over the listing flags.`,
 	RunE: runProcessHistory,
 }
 
-// processErrorLogsEndpoint builds the per-process error-log collection path.
-// odataKey doubles single quotes before URL-escaping so names containing '
-// produce a valid OData string literal.
-func processErrorLogsEndpoint(name string) string {
-	return fmt.Sprintf("Processes('%s')/ErrorLogs", odataKey(name))
+// errorLogFilesEndpoint is the global error-log-file collection. Per-process
+// filtering happens client-side via the canonical filename pattern (see
+// parseErrorLogFilename), because the per-process Processes('name')/ErrorLogs
+// endpoint is keyed by Timestamp and does not carry filenames.
+func errorLogFilesEndpoint() string {
+	return "ErrorLogFiles"
 }
 
 // errorLogContentEndpoint builds the path to a single error-log file's content.
+// odataKey doubles single quotes before URL-escaping so filenames containing '
+// produce a valid OData string literal.
 func errorLogContentEndpoint(file string) string {
 	return fmt.Sprintf("ErrorLogFiles('%s')/Content", odataKey(file))
 }
 
-// buildHistoryEntries maps raw error-log records to display rows. It returns a
-// non-nil slice so JSON output renders [] rather than null. User and Duration
-// are left empty — the ErrorLogs endpoint does not expose them.
-func buildHistoryEntries(logs []model.ProcessErrorLog) []model.ProcessHistoryEntry {
-	out := make([]model.ProcessHistoryEntry, 0, len(logs))
-	for _, l := range logs {
+// parseErrorLogFilename pulls the process name and start time from a TM1
+// process error-log filename. The canonical shape is
+// TM1ProcessError_<14-digit-YYYYMMDDHHMMSS>_<processname>.log.
+//
+// Returns ok=true when the structural shape matches (regardless of whether
+// the timestamp slot is parseable). startTime is empty when the 14-char slot
+// is not a valid YYYYMMDDHHMMSS — the table renders that as "-".
+func parseErrorLogFilename(filename string) (procName, startTime string, ok bool) {
+	const prefix = "TM1ProcessError_"
+	const suffix = ".log"
+	const tsLen = 14
+	if !strings.HasPrefix(filename, prefix) || !strings.HasSuffix(filename, suffix) {
+		return "", "", false
+	}
+	rest := filename[len(prefix) : len(filename)-len(suffix)]
+	// Need at least: 14-char timestamp slot + '_' + at least 1 char of name.
+	if len(rest) < tsLen+2 || rest[tsLen] != '_' {
+		return "", "", false
+	}
+	name := rest[tsLen+1:]
+	if t, err := time.Parse("20060102150405", rest[:tsLen]); err == nil {
+		startTime = t.UTC().Format(time.RFC3339)
+	}
+	return name, startTime, true
+}
+
+// buildHistoryEntries filters the global error-log-file collection to those
+// belonging to processName (by canonical filename pattern) and maps them to
+// display rows. Returns a non-nil slice so JSON output renders [] not null.
+// User and Duration are left empty — the ErrorLogFiles endpoint does not
+// expose them.
+func buildHistoryEntries(files []model.ErrorLogFile, processName string) []model.ProcessHistoryEntry {
+	out := make([]model.ProcessHistoryEntry, 0, len(files))
+	for _, f := range files {
+		filename := f.LogFile()
+		name, startTime, ok := parseErrorLogFilename(filename)
+		if !ok || name != processName {
+			continue
+		}
 		out = append(out, model.ProcessHistoryEntry{
-			StartTime:    l.Timestamp,
+			StartTime:    startTime,
 			Status:       processHistoryStatusError,
-			ErrorLogFile: l.LogFile(),
+			ErrorLogFile: filename,
 		})
 	}
 	return out
@@ -191,23 +228,19 @@ func runProcessHistory(cmd *cobra.Command, args []string) error {
 		return errSilent
 	}
 
-	data, err := cl.Get(processErrorLogsEndpoint(processName))
+	data, err := cl.Get(errorLogFilesEndpoint())
 	if err != nil {
-		if errors.Is(err, client.ErrNotFound) {
-			output.PrintError(fmt.Sprintf("Process '%s' not found.", processName), jsonMode)
-			return errExit(3)
-		}
 		output.PrintError(err.Error(), jsonMode)
 		return errSilent
 	}
 
-	var resp model.ProcessErrorLogResponse
+	var resp model.ErrorLogFileResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		output.PrintError("Cannot parse server response.", jsonMode)
 		return errSilent
 	}
 
-	entries := buildHistoryEntries(resp.Value)
+	entries := buildHistoryEntries(resp.Value, processName)
 	rawCount := len(entries)
 	entries = filterHistorySince(entries, sinceTS)
 	if procHistOnlyFailures {

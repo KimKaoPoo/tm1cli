@@ -443,13 +443,13 @@ func processDetailJSON(name string) []byte {
 	return data
 }
 
-// processErrorLogsJSON returns JSON for a TM1 Processes('name')/ErrorLogs response.
-func processErrorLogsJSON(entries ...model.ProcessErrorLog) []byte {
+// errorLogFilesJSON returns JSON for a TM1 ErrorLogFiles collection response.
+func errorLogFilesJSON(files ...model.ErrorLogFile) []byte {
 	resp := struct {
-		Value []model.ProcessErrorLog `json:"value"`
-	}{Value: entries}
+		Value []model.ErrorLogFile `json:"value"`
+	}{Value: files}
 	if resp.Value == nil {
-		resp.Value = []model.ProcessErrorLog{}
+		resp.Value = []model.ErrorLogFile{}
 	}
 	data, _ := json.Marshal(resp)
 	return data

@@ -10,51 +10,109 @@ import (
 
 // --- Unit: endpoint builders ---
 
-func TestProcessErrorLogsEndpoint(t *testing.T) {
+func TestErrorLogFilesEndpoint(t *testing.T) {
+	if got := errorLogFilesEndpoint(); got != "ErrorLogFiles" {
+		t.Errorf("errorLogFilesEndpoint() = %q, want %q", got, "ErrorLogFiles")
+	}
+}
+
+func TestErrorLogContentEndpoint(t *testing.T) {
 	tests := []struct {
 		name string
-		proc string
+		file string
 		want string
 	}{
-		{name: "plain", proc: "Load", want: "Processes('Load')/ErrorLogs"},
-		{name: "dotted", proc: "Bedrock.Server.Wait", want: "Processes('Bedrock.Server.Wait')/ErrorLogs"},
-		{name: "space escaped", proc: "Load Data", want: "Processes('Load%20Data')/ErrorLogs"},
-		// odataKey doubles the single quote ('') for a valid OData string literal,
-		// then url.PathEscape encodes each quote to %27 — yielding %27%27.
-		{name: "apostrophe doubled then escaped", proc: "It's", want: "Processes('It%27%27s')/ErrorLogs"},
+		{name: "plain", file: "TM1ProcessError_20260528090402_Load.log", want: "ErrorLogFiles('TM1ProcessError_20260528090402_Load.log')/Content"},
+		{name: "space encoded", file: "with space.log", want: "ErrorLogFiles('with%20space.log')/Content"},
+		// odataKey doubles the single quote ('') then url.PathEscape percent-encodes
+		// each quote to %27, yielding %27%27.
+		{name: "apostrophe doubled then escaped", file: "It's.log", want: "ErrorLogFiles('It%27%27s.log')/Content"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := processErrorLogsEndpoint(tt.proc); got != tt.want {
-				t.Errorf("processErrorLogsEndpoint(%q) = %q, want %q", tt.proc, got, tt.want)
+			if got := errorLogContentEndpoint(tt.file); got != tt.want {
+				t.Errorf("errorLogContentEndpoint(%q) = %q, want %q", tt.file, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestErrorLogContentEndpoint(t *testing.T) {
-	got := errorLogContentEndpoint("TM1ProcessError_20260528_Load.log")
-	want := "ErrorLogFiles('TM1ProcessError_20260528_Load.log')/Content"
-	if got != want {
-		t.Errorf("errorLogContentEndpoint() = %q, want %q", got, want)
+// --- Unit: parseErrorLogFilename ---
+
+func TestParseErrorLogFilename(t *testing.T) {
+	tests := []struct {
+		name          string
+		filename      string
+		wantOK        bool
+		wantProc      string
+		wantStartTime string
+	}{
+		{
+			name:          "canonical",
+			filename:      "TM1ProcessError_20260528090402_Load.log",
+			wantOK:        true,
+			wantProc:      "Load",
+			wantStartTime: "2026-05-28T09:04:02Z",
+		},
+		{
+			name:          "process name with underscores",
+			filename:      "TM1ProcessError_20260528090402_Load_Data.log",
+			wantOK:        true,
+			wantProc:      "Load_Data",
+			wantStartTime: "2026-05-28T09:04:02Z",
+		},
+		{
+			name:          "non-numeric timestamp slot — structurally ok, empty start time",
+			filename:      "TM1ProcessError_AAAAAAAAAAAAAA_Load.log",
+			wantOK:        true,
+			wantProc:      "Load",
+			wantStartTime: "",
+		},
+		{name: "missing prefix", filename: "TM1Other_20260528090402_Load.log", wantOK: false},
+		{name: "missing .log suffix", filename: "TM1ProcessError_20260528090402_Load.txt", wantOK: false},
+		{name: "missing process name", filename: "TM1ProcessError_20260528090402.log", wantOK: false},
+		{name: "empty process name after separator", filename: "TM1ProcessError_20260528090402_.log", wantOK: false},
+		{name: "timestamp slot too short", filename: "TM1ProcessError_2026_Load.log", wantOK: false},
+		{name: "no separator after timestamp slot", filename: "TM1ProcessError_20260528090402ZLoad.log", wantOK: false},
+		{name: "empty filename", filename: "", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotProc, gotStart, gotOK := parseErrorLogFilename(tt.filename)
+			if gotOK != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotOK {
+				if gotProc != tt.wantProc {
+					t.Errorf("procName = %q, want %q", gotProc, tt.wantProc)
+				}
+				if gotStart != tt.wantStartTime {
+					t.Errorf("startTime = %q, want %q", gotStart, tt.wantStartTime)
+				}
+			}
+		})
 	}
 }
 
 // --- Unit: buildHistoryEntries ---
 
 func TestBuildHistoryEntries(t *testing.T) {
-	logs := []model.ProcessErrorLog{
-		{Timestamp: "2026-05-28T09:14:02Z", File: "a.log"},
-		{Timestamp: "2026-05-27T22:01:55Z", Filename: "b.log"},
-		{Timestamp: "2026-05-26T10:00:00Z"}, // no filename
+	files := []model.ErrorLogFile{
+		{Filename: "TM1ProcessError_20260528090402_Load.log"},      // match (Load)
+		{Filename: "TM1ProcessError_20260527000000_Load.log"},      // match (Load)
+		{File: "TM1ProcessError_20260528000000_Load.log"},          // match via File fallback
+		{Filename: "TM1ProcessError_20260528090402_OtherProc.log"}, // different process — drop
+		{Filename: "Other.log"},                                    // non-canonical — drop
+		{Filename: ""},                                             // empty — drop
+		{Filename: "TM1ProcessError_AAAAAAAAAAAAAA_Load.log"},      // canonical shape, unparseable ts
 	}
 
-	entries := buildHistoryEntries(logs)
+	entries := buildHistoryEntries(files, "Load")
 	if entries == nil {
-		t.Fatal("buildHistoryEntries returned nil slice; want non-nil for JSON []")
+		t.Fatal("buildHistoryEntries returned nil slice; want non-nil")
 	}
-	if len(entries) != 3 {
-		t.Fatalf("len = %d, want 3", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("len = %d, want 4 (3 canonical Load + 1 unparseable-ts Load)", len(entries))
 	}
 
 	for i, e := range entries {
@@ -62,17 +120,29 @@ func TestBuildHistoryEntries(t *testing.T) {
 			t.Errorf("entry[%d].Status = %q, want %q", i, e.Status, processHistoryStatusError)
 		}
 		if e.User != "" || e.Duration != "" {
-			t.Errorf("entry[%d] User/Duration = %q/%q, want empty", i, e.User, e.Duration)
+			t.Errorf("entry[%d] User/Duration must be empty, got %q/%q", i, e.User, e.Duration)
+		}
+		if e.ErrorLogFile == "" {
+			t.Errorf("entry[%d].ErrorLogFile is empty", i)
 		}
 	}
-	if entries[0].StartTime != "2026-05-28T09:14:02Z" || entries[0].ErrorLogFile != "a.log" {
-		t.Errorf("entry[0] = %+v", entries[0])
+
+	// Spot-check the first row: canonical filename → parsed StartTime.
+	if entries[0].StartTime != "2026-05-28T09:04:02Z" {
+		t.Errorf("entries[0].StartTime = %q, want 2026-05-28T09:04:02Z", entries[0].StartTime)
 	}
-	if entries[1].ErrorLogFile != "b.log" {
-		t.Errorf("entry[1].ErrorLogFile = %q, want b.log", entries[1].ErrorLogFile)
+	// Unparseable-timestamp row keeps empty StartTime.
+	var foundUnparseable bool
+	for _, e := range entries {
+		if e.ErrorLogFile == "TM1ProcessError_AAAAAAAAAAAAAA_Load.log" {
+			foundUnparseable = true
+			if e.StartTime != "" {
+				t.Errorf("unparseable-ts row should have empty StartTime, got %q", e.StartTime)
+			}
+		}
 	}
-	if entries[2].ErrorLogFile != "" {
-		t.Errorf("entry[2].ErrorLogFile = %q, want empty", entries[2].ErrorLogFile)
+	if !foundUnparseable {
+		t.Error("expected to find the unparseable-timestamp Load row in output")
 	}
 }
 
@@ -172,8 +242,7 @@ func TestSortHistoryByTimeDesc(t *testing.T) {
 
 func TestTailHistory(t *testing.T) {
 	mk := func(n int) []model.ProcessHistoryEntry {
-		out := make([]model.ProcessHistoryEntry, n)
-		return out
+		return make([]model.ProcessHistoryEntry, n)
 	}
 	tests := []struct {
 		name string
@@ -198,17 +267,34 @@ func TestTailHistory(t *testing.T) {
 
 // --- Integration helpers ---
 
-// errorLogEntries returns three error-log records (deliberately out of order)
-// spanning two days. Newest: err_c.log, then err_b.log, oldest err_a.log.
-func errorLogEntries() []model.ProcessErrorLog {
-	return []model.ProcessErrorLog{
-		{Timestamp: "2026-05-27T00:00:00Z", ProcessName: "Load", Filename: "err_a.log"},
-		{Timestamp: "2026-05-28T12:00:00Z", ProcessName: "Load", Filename: "err_c.log"},
-		{Timestamp: "2026-05-28T06:00:00Z", ProcessName: "Load", Filename: "err_b.log"},
+// errorLogFileFixtures returns canonical TM1 error-log files for process "Load"
+// (deliberately out of order, newest = err_c) plus a noise file belonging to a
+// different process to confirm client-side filtering.
+//
+// "Load" entries:
+//
+//	err_a: 2026-05-27T00:00:00Z
+//	err_b: 2026-05-28T06:00:00Z
+//	err_c: 2026-05-28T12:00:00Z (newest)
+//
+// "OtherProc" noise must be filtered out by process filter.
+const (
+	errFileA     = "TM1ProcessError_20260527000000_Load.log"
+	errFileB     = "TM1ProcessError_20260528060000_Load.log"
+	errFileC     = "TM1ProcessError_20260528120000_Load.log"
+	errFileNoise = "TM1ProcessError_20260528090000_OtherProc.log"
+)
+
+func errorLogFileFixtures() []model.ErrorLogFile {
+	return []model.ErrorLogFile{
+		{Filename: errFileA},
+		{Filename: errFileC},
+		{Filename: errFileNoise},
+		{Filename: errFileB},
 	}
 }
 
-// historyListHandler serves the ErrorLogs listing and fails the test if any
+// historyListHandler serves the ErrorLogFiles listing and fails the test if any
 // audit/message/transaction-log endpoint is hit — proving the command works
 // without audit logging enabled.
 func historyListHandler(t *testing.T, body []byte) http.HandlerFunc {
@@ -220,7 +306,7 @@ func historyListHandler(t *testing.T, body []byte) http.HandlerFunc {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		if strings.HasSuffix(p, "/ErrorLogs") {
+		if strings.HasSuffix(p, "/ErrorLogFiles") {
 			w.Write(body)
 			return
 		}
@@ -232,7 +318,7 @@ func historyListHandler(t *testing.T, body []byte) http.HandlerFunc {
 // --- Integration: listing ---
 
 func TestProcessHistory_ListTable(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
@@ -252,10 +338,14 @@ func TestProcessHistory_ListTable(t *testing.T) {
 	if !strings.Contains(out, "-") {
 		t.Errorf("output missing dash placeholder\n%s", out)
 	}
+	// Noise file (different process) must be filtered out.
+	if strings.Contains(out, errFileNoise) {
+		t.Errorf("noise file for OtherProc must not appear in Load history\n%s", out)
+	}
 	// Most recent first: err_c before err_b before err_a.
-	ic, ib, ia := strings.Index(out, "err_c.log"), strings.Index(out, "err_b.log"), strings.Index(out, "err_a.log")
+	ic, ib, ia := strings.Index(out, errFileC), strings.Index(out, errFileB), strings.Index(out, errFileA)
 	if ic < 0 || ib < 0 || ia < 0 {
-		t.Fatalf("missing a filename in output\n%s", out)
+		t.Fatalf("missing a Load filename in output\n%s", out)
 	}
 	if !(ic < ib && ib < ia) {
 		t.Errorf("rows not sorted most-recent-first (c=%d b=%d a=%d)\n%s", ic, ib, ia, out)
@@ -263,7 +353,7 @@ func TestProcessHistory_ListTable(t *testing.T) {
 }
 
 func TestProcessHistory_JSON(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
@@ -276,7 +366,7 @@ func TestProcessHistory_JSON(t *testing.T) {
 		t.Fatalf("output is not a JSON array: %v\n%s", err, out)
 	}
 	if len(got) != 3 {
-		t.Fatalf("len = %d, want 3", len(got))
+		t.Fatalf("len = %d, want 3 (noise file should be filtered)", len(got))
 	}
 	if got[0].Status != "Error" || got[0].StartTime == "" {
 		t.Errorf("got[0] = %+v", got[0])
@@ -287,7 +377,7 @@ func TestProcessHistory_JSON(t *testing.T) {
 }
 
 func TestProcessHistory_Tail(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	res := captureAll(t, func() {
@@ -295,10 +385,10 @@ func TestProcessHistory_Tail(t *testing.T) {
 		rootCmd.Execute()
 	})
 
-	if !strings.Contains(res.Stdout, "err_c.log") || !strings.Contains(res.Stdout, "err_b.log") {
+	if !strings.Contains(res.Stdout, errFileC) || !strings.Contains(res.Stdout, errFileB) {
 		t.Errorf("expected two newest entries in output\n%s", res.Stdout)
 	}
-	if strings.Contains(res.Stdout, "err_a.log") {
+	if strings.Contains(res.Stdout, errFileA) {
 		t.Errorf("oldest entry should be trimmed by --tail 2\n%s", res.Stdout)
 	}
 	if !strings.Contains(res.Stderr, "Showing 2 of 3") {
@@ -310,7 +400,7 @@ func TestProcessHistory_Tail(t *testing.T) {
 }
 
 func TestProcessHistory_Since(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
@@ -318,16 +408,16 @@ func TestProcessHistory_Since(t *testing.T) {
 		rootCmd.Execute()
 	})
 
-	if !strings.Contains(out, "err_c.log") {
-		t.Errorf("expected err_c.log (after cutoff)\n%s", out)
+	if !strings.Contains(out, errFileC) {
+		t.Errorf("expected newest entry (after cutoff)\n%s", out)
 	}
-	if strings.Contains(out, "err_b.log") || strings.Contains(out, "err_a.log") {
+	if strings.Contains(out, errFileB) || strings.Contains(out, errFileA) {
 		t.Errorf("entries before cutoff should be filtered out\n%s", out)
 	}
 }
 
 func TestProcessHistory_OnlyFailures(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
@@ -335,8 +425,8 @@ func TestProcessHistory_OnlyFailures(t *testing.T) {
 		rootCmd.Execute()
 	})
 
-	// All error-log entries are failures, so all are retained.
-	for _, f := range []string{"err_a.log", "err_b.log", "err_c.log"} {
+	// All error-log entries are failures, so all 3 Load entries are retained.
+	for _, f := range []string{errFileA, errFileB, errFileC} {
 		if !strings.Contains(out, f) {
 			t.Errorf("expected %s with --only-failures\n%s", f, out)
 		}
@@ -345,7 +435,7 @@ func TestProcessHistory_OnlyFailures(t *testing.T) {
 
 func TestProcessHistory_EmptyHistory(t *testing.T) {
 	t.Run("table prints a note to stderr", func(t *testing.T) {
-		setupMockTM1(t, historyListHandler(t, processErrorLogsJSON()))
+		setupMockTM1(t, historyListHandler(t, errorLogFilesJSON()))
 		resetCmdFlags(t)
 
 		res := captureAll(t, func() {
@@ -358,7 +448,7 @@ func TestProcessHistory_EmptyHistory(t *testing.T) {
 	})
 
 	t.Run("json emits empty array", func(t *testing.T) {
-		setupMockTM1(t, historyListHandler(t, processErrorLogsJSON()))
+		setupMockTM1(t, historyListHandler(t, errorLogFilesJSON()))
 		resetCmdFlags(t)
 
 		out := captureStdout(t, func() {
@@ -369,12 +459,26 @@ func TestProcessHistory_EmptyHistory(t *testing.T) {
 			t.Errorf("expected [], got: %q", out)
 		}
 	})
+
+	t.Run("no files match this process", func(t *testing.T) {
+		// Server returns files but none for "Load".
+		setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(model.ErrorLogFile{Filename: errFileNoise})))
+		resetCmdFlags(t)
+
+		res := captureAll(t, func() {
+			rootCmd.SetArgs([]string{"process", "history", "Load"})
+			rootCmd.Execute()
+		})
+		if !strings.Contains(res.Stderr, "No error-log history found") {
+			t.Errorf("expected empty-history note when no files match, got: %s", res.Stderr)
+		}
+	})
 }
 
-// TestProcessHistory_FilteredEmpty verifies that when history exists but a
-// filter removes every row, the note distinguishes that from "no history".
+// TestProcessHistory_FilteredEmpty verifies that when matching files exist but
+// a filter removes every row, the note distinguishes that from "no history".
 func TestProcessHistory_FilteredEmpty(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	res := captureAll(t, func() {
@@ -404,7 +508,7 @@ func TestProcessHistory_ShowError(t *testing.T) {
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
-		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", "err_c.log"})
+		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", errFileC})
 		rootCmd.Execute()
 	})
 
@@ -425,7 +529,7 @@ func TestProcessHistory_ShowErrorJSON(t *testing.T) {
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
-		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", "err_c.log", "--output", "json"})
+		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", errFileC, "--output", "json"})
 		rootCmd.Execute()
 	})
 
@@ -433,17 +537,17 @@ func TestProcessHistory_ShowErrorJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("output is not JSON object: %v\n%s", err, out)
 	}
-	if got["file"] != "err_c.log" || got["content"] != content {
+	if got["file"] != errFileC || got["content"] != content {
 		t.Errorf("got = %+v", got)
 	}
 }
 
 // TestProcessHistory_ShowErrorPrecedence verifies --show-error takes precedence:
-// the content endpoint is fetched and the ErrorLogs listing endpoint is NEVER hit.
+// the content endpoint is fetched and the listing endpoint is NEVER hit.
 func TestProcessHistory_ShowErrorPrecedence(t *testing.T) {
 	const content = "precedence-content\n"
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/ErrorLogs") {
+		if strings.HasSuffix(r.URL.Path, "/ErrorLogFiles") {
 			t.Errorf("listing endpoint must not be called in --show-error mode: %s", r.URL.Path)
 		}
 		if strings.HasSuffix(r.URL.Path, "/Content") {
@@ -455,7 +559,7 @@ func TestProcessHistory_ShowErrorPrecedence(t *testing.T) {
 	resetCmdFlags(t)
 
 	out := captureStdout(t, func() {
-		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", "err_c.log", "--tail", "5", "--since", "1h"})
+		rootCmd.SetArgs([]string{"process", "history", "Load", "--show-error", errFileC, "--tail", "5", "--since", "1h"})
 		rootCmd.Execute()
 	})
 
@@ -465,26 +569,6 @@ func TestProcessHistory_ShowErrorPrecedence(t *testing.T) {
 }
 
 // --- Integration: error/edge cases ---
-
-func TestProcessHistory_ProcessNotFound(t *testing.T) {
-	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	resetCmdFlags(t)
-
-	var execErr error
-	res := captureAll(t, func() {
-		rootCmd.SetArgs([]string{"process", "history", "DoesNotExist"})
-		execErr = rootCmd.Execute()
-	})
-
-	if got := exitCodeForError(execErr); got != 3 {
-		t.Errorf("exit code = %d, want 3", got)
-	}
-	if !strings.Contains(res.Stderr, "not found") {
-		t.Errorf("expected not-found message, got stderr: %s", res.Stderr)
-	}
-}
 
 func TestProcessHistory_ShowErrorMissingFile(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
@@ -507,7 +591,7 @@ func TestProcessHistory_ShowErrorMissingFile(t *testing.T) {
 }
 
 func TestProcessHistory_InvalidSince(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	var execErr error
@@ -525,7 +609,7 @@ func TestProcessHistory_InvalidSince(t *testing.T) {
 }
 
 func TestProcessHistory_NegativeTail(t *testing.T) {
-	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	setupMockTM1(t, historyListHandler(t, errorLogFilesJSON(errorLogFileFixtures()...)))
 	resetCmdFlags(t)
 
 	var execErr error
@@ -544,7 +628,7 @@ func TestProcessHistory_NegativeTail(t *testing.T) {
 
 func TestProcessHistory_MalformedJSON(t *testing.T) {
 	setupMockTM1(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/ErrorLogs") {
+		if strings.HasSuffix(r.URL.Path, "/ErrorLogFiles") {
 			w.Write([]byte("{not valid json"))
 			return
 		}
