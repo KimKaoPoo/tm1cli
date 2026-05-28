@@ -48,7 +48,7 @@ it takes precedence over the listing flags.`,
   tm1cli process history "LoadData" --since 24h
   tm1cli process history "LoadData" --since 2026-05-28T10:00
   tm1cli process history "LoadData" --only-failures
-  tm1cli process history "LoadData" --show-error TM1ProcessError_20260528_LoadData.log
+  tm1cli process history "LoadData" --show-error TM1ProcessError_20260528090402_LoadData.log
   tm1cli process history "LoadData" --output json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProcessHistory,

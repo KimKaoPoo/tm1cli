@@ -181,6 +181,9 @@ tm1cli process list                        # list TI processes
 tm1cli process list --filter "load"
 tm1cli process run "LoadData"              # run without params
 tm1cli process run "LoadData" --param pSource=file.csv --param pYear=2024
+tm1cli process history "LoadData"          # list recent error-log files for a process
+tm1cli process history "LoadData" --tail 10 --since 24h
+tm1cli process history "LoadData" --show-error TM1ProcessError_20260528090402_LoadData.log
 ```
 
 ### Threads
