@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -55,14 +54,15 @@ it takes precedence over the listing flags.`,
 }
 
 // processErrorLogsEndpoint builds the per-process error-log collection path.
-// Matches the codebase convention (process.go) of url.PathEscape on the name.
+// odataKey doubles single quotes before URL-escaping so names containing '
+// produce a valid OData string literal.
 func processErrorLogsEndpoint(name string) string {
-	return fmt.Sprintf("Processes('%s')/ErrorLogs", url.PathEscape(name))
+	return fmt.Sprintf("Processes('%s')/ErrorLogs", odataKey(name))
 }
 
 // errorLogContentEndpoint builds the path to a single error-log file's content.
 func errorLogContentEndpoint(file string) string {
-	return fmt.Sprintf("ErrorLogFiles('%s')/Content", url.PathEscape(file))
+	return fmt.Sprintf("ErrorLogFiles('%s')/Content", odataKey(file))
 }
 
 // buildHistoryEntries maps raw error-log records to display rows. It returns a
@@ -208,6 +208,7 @@ func runProcessHistory(cmd *cobra.Command, args []string) error {
 	}
 
 	entries := buildHistoryEntries(resp.Value)
+	rawCount := len(entries)
 	entries = filterHistorySince(entries, sinceTS)
 	if procHistOnlyFailures {
 		entries = filterOnlyFailures(entries)
@@ -216,11 +217,14 @@ func runProcessHistory(cmd *cobra.Command, args []string) error {
 	total := len(entries)
 	entries = tailHistory(entries, procHistTail)
 
-	displayProcessHistory(processName, entries, total, jsonMode)
+	displayProcessHistory(processName, entries, total, rawCount, jsonMode)
 	return nil
 }
 
-func displayProcessHistory(name string, entries []model.ProcessHistoryEntry, total int, jsonMode bool) {
+// displayProcessHistory renders the run history. total is the count after
+// filtering; rawCount is the count before filtering, used only to distinguish
+// "no history at all" from "history exists but nothing matched the filters".
+func displayProcessHistory(name string, entries []model.ProcessHistoryEntry, total, rawCount int, jsonMode bool) {
 	if jsonMode {
 		if entries == nil {
 			entries = []model.ProcessHistoryEntry{}
@@ -230,7 +234,11 @@ func displayProcessHistory(name string, entries []model.ProcessHistoryEntry, tot
 	}
 
 	if total == 0 {
-		fmt.Fprintf(os.Stderr, "No error-log history found for process '%s'.\n", name)
+		if rawCount == 0 {
+			fmt.Fprintf(os.Stderr, "No error-log history found for process '%s'.\n", name)
+		} else {
+			fmt.Fprintf(os.Stderr, "No runs match the filter for process '%s'.\n", name)
+		}
 		return
 	}
 

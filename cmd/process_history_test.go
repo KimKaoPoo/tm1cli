@@ -19,10 +19,9 @@ func TestProcessErrorLogsEndpoint(t *testing.T) {
 		{name: "plain", proc: "Load", want: "Processes('Load')/ErrorLogs"},
 		{name: "dotted", proc: "Bedrock.Server.Wait", want: "Processes('Bedrock.Server.Wait')/ErrorLogs"},
 		{name: "space escaped", proc: "Load Data", want: "Processes('Load%20Data')/ErrorLogs"},
-		// url.PathEscape percent-encodes the apostrophe to %27. This documents the
-		// existing codebase convention (process.go uses url.PathEscape too); OData
-		// string-literal quote-doubling is intentionally not done here.
-		{name: "apostrophe percent-encoded", proc: "It's", want: "Processes('It%27s')/ErrorLogs"},
+		// odataKey doubles the single quote ('') for a valid OData string literal,
+		// then url.PathEscape encodes each quote to %27 — yielding %27%27.
+		{name: "apostrophe doubled then escaped", proc: "It's", want: "Processes('It%27%27s')/ErrorLogs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -370,6 +369,24 @@ func TestProcessHistory_EmptyHistory(t *testing.T) {
 			t.Errorf("expected [], got: %q", out)
 		}
 	})
+}
+
+// TestProcessHistory_FilteredEmpty verifies that when history exists but a
+// filter removes every row, the note distinguishes that from "no history".
+func TestProcessHistory_FilteredEmpty(t *testing.T) {
+	setupMockTM1(t, historyListHandler(t, processErrorLogsJSON(errorLogEntries()...)))
+	resetCmdFlags(t)
+
+	res := captureAll(t, func() {
+		rootCmd.SetArgs([]string{"process", "history", "Load", "--since", "2030-01-01T00:00:00Z"})
+		rootCmd.Execute()
+	})
+	if !strings.Contains(res.Stderr, "No runs match the filter") {
+		t.Errorf("expected filtered-empty note, got stderr: %s", res.Stderr)
+	}
+	if strings.Contains(res.Stderr, "No error-log history found") {
+		t.Errorf("should not report 'no history' when entries exist but are filtered out: %s", res.Stderr)
+	}
 }
 
 // --- Integration: --show-error ---
