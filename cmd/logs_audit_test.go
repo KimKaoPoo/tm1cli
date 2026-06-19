@@ -98,6 +98,13 @@ func TestBuildAuditQuery_EmptyOrderByOmitsOrderby(t *testing.T) {
 	}
 }
 
+func TestBuildAuditQuery_EncodesODataSpacesAsPercent20(t *testing.T) {
+	got := buildAuditQuery("ObjectType eq 'Cube'", 50, orderTimeStampDesc)
+	if strings.Contains(got, "+") {
+		t.Fatalf("query contains '+', which TM1 does not accept as an OData space: %q", got)
+	}
+}
+
 // ============================================================
 // Unit tests — applyAuditClientFilters
 // ============================================================

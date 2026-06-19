@@ -368,6 +368,21 @@ func TestBuildMessageLogQuery(t *testing.T) {
 	}
 }
 
+func TestBuildMessageLogQuery_EncodesODataSpacesAsPercent20(t *testing.T) {
+	got := buildMessageLogQuery("Level eq 'Error'", 100, true)
+	if strings.Contains(got, "+") {
+		t.Fatalf("query contains '+', which TM1 does not accept as an OData space: %q", got)
+	}
+	for _, want := range []string{
+		"%24filter=Level%20eq%20%27Error%27",
+		"%24orderby=TimeStamp%20desc",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("query %q missing %q", got, want)
+		}
+	}
+}
+
 // ============================================================
 // Unit Tests — applyClientFilters
 // ============================================================

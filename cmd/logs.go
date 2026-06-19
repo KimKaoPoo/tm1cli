@@ -146,8 +146,15 @@ func buildMessageLogFilter(sinceTS, level string) string {
 	return strings.Join(parts, " and ")
 }
 
-// buildMessageLogQuery builds the full endpoint URL path with $filter, $top, and $orderby
-// using url.Values for safe encoding.
+// encodeODataQuery uses percent encoding for spaces. net/url's query encoder
+// normally emits '+', but TM1's OData parser treats that as a literal token
+// rather than a space (for example, "TimeStamp+desc" is rejected).
+func encodeODataQuery(v url.Values) string {
+	return strings.ReplaceAll(v.Encode(), "+", "%20")
+}
+
+// buildMessageLogQuery builds the full endpoint URL path with $filter, $top,
+// and $orderby using OData-compatible query encoding.
 func buildMessageLogQuery(filter string, top int, orderDesc bool) string {
 	v := url.Values{}
 	if filter != "" {
@@ -162,7 +169,7 @@ func buildMessageLogQuery(filter string, top int, orderDesc bool) string {
 	if len(v) == 0 {
 		return "MessageLogEntries"
 	}
-	return "MessageLogEntries?" + v.Encode()
+	return "MessageLogEntries?" + encodeODataQuery(v)
 }
 
 // isFilterRejection returns true for HTTP 400/501 with a body referencing

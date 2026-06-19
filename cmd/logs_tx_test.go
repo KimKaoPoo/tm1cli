@@ -273,6 +273,13 @@ func TestBuildTxQuery(t *testing.T) {
 			t.Errorf("query %q should not contain $orderby", got)
 		}
 	})
+
+	t.Run("encodes OData spaces as percent20", func(t *testing.T) {
+		got := buildTxQuery("Cube eq 'Sales'", 50, orderTimeStampDesc)
+		if strings.Contains(got, "+") {
+			t.Fatalf("query contains '+', which TM1 does not accept as an OData space: %q", got)
+		}
+	})
 }
 
 // ============================================================

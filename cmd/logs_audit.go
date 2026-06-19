@@ -128,7 +128,7 @@ func buildAuditFilter(sinceTS, untilTS, objectType, objectName, user string) str
 }
 
 // buildAuditQuery builds the endpoint URL with $filter, $top, $orderby using
-// url.Values for safe encoding. orderBy must be "", orderTimeStampAsc, or
+// OData-compatible query encoding. orderBy must be "", orderTimeStampAsc, or
 // orderTimeStampDesc — empty means no $orderby clause (use server default).
 func buildAuditQuery(filter string, top int, orderBy string) string {
 	v := url.Values{}
@@ -144,7 +144,7 @@ func buildAuditQuery(filter string, top int, orderBy string) string {
 	if len(v) == 0 {
 		return "AuditLogEntries"
 	}
-	return "AuditLogEntries?" + v.Encode()
+	return "AuditLogEntries?" + encodeODataQuery(v)
 }
 
 // fetchAuditEntries performs GET. On HTTP 400/501 with a filter-rejection body,
