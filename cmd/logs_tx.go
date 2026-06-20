@@ -148,7 +148,7 @@ const (
 )
 
 // buildTxQuery builds the endpoint URL with $filter, $top, $orderby using
-// url.Values for safe encoding. orderBy must be "", orderTimeStampAsc, or
+// OData-compatible query encoding. orderBy must be "", orderTimeStampAsc, or
 // orderTimeStampDesc — empty means no $orderby clause (use server default).
 func buildTxQuery(filter string, top int, orderBy string) string {
 	v := url.Values{}
@@ -164,7 +164,7 @@ func buildTxQuery(filter string, top int, orderBy string) string {
 	if len(v) == 0 {
 		return "TransactionLogEntries"
 	}
-	return "TransactionLogEntries?" + v.Encode()
+	return "TransactionLogEntries?" + encodeODataQuery(v)
 }
 
 // fetchTxEntries performs GET. On HTTP 400/501 with a filter-rejection body,
