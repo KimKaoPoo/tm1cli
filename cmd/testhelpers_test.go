@@ -202,6 +202,10 @@ func zeroAllFlags() {
 	procLoadFile = ""
 	procLoadCreateOnly = false
 	procLoadUpdateOnly = false
+	procHistTail = 0
+	procHistSince = ""
+	procHistOnlyFailures = false
+	procHistShowError = ""
 	exportView = ""
 	exportMDX = ""
 	exportOut = ""
@@ -436,6 +440,18 @@ func processDetailJSON(name string) []byte {
 		Variables:  []model.ProcessVariable{},
 	}
 	data, _ := json.Marshal(detail)
+	return data
+}
+
+// errorLogFilesJSON returns JSON for a TM1 ErrorLogFiles collection response.
+func errorLogFilesJSON(files ...model.ErrorLogFile) []byte {
+	resp := struct {
+		Value []model.ErrorLogFile `json:"value"`
+	}{Value: files}
+	if resp.Value == nil {
+		resp.Value = []model.ErrorLogFile{}
+	}
+	data, _ := json.Marshal(resp)
 	return data
 }
 
